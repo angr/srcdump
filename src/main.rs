@@ -9,12 +9,14 @@ mod cli;
 mod model;
 mod output;
 mod pool;
+mod progress;
 
 use anyhow::{Context, Result};
 use backend::{DecompileBackend, DecompileRequest, Mode};
 use clap::Parser;
 use cli::Cli;
 use pool::ProcessPoolBackend;
+use progress::Progress;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -51,7 +53,15 @@ fn run() -> Result<()> {
     };
 
     let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
-    let result = backend.run(&req)?;
+    let mut progress = Progress::new(cli.progress, cli.list);
+    let result = backend.run(&req, &mut progress)?;
+
+    let verb = if cli.list { "Listed" } else { "Decompiled" };
+    progress.finish(&format!(
+        "{verb} {} function(s) in {}",
+        result.functions.len(),
+        progress.elapsed_str()
+    ));
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());

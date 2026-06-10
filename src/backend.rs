@@ -5,6 +5,7 @@
 //! happens, leaving room for e.g. an in-process or CFG-cached backend later.
 
 use crate::model::{FunctionError, FunctionInfo};
+use crate::progress::Progress;
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -59,5 +60,5 @@ pub struct DecompileResult {
 }
 
 pub trait DecompileBackend {
-    fn run(&self, req: &DecompileRequest) -> Result<DecompileResult>;
+    fn run(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<DecompileResult>;
 }

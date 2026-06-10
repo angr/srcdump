@@ -177,13 +177,29 @@ def build_db(angr, AngrDB, args) -> int:
     if not args.binary:
         emit({"kind": "fatal", "message": "build mode requires a binary path"})
         return 1
+
+    # Throttle CFG progress to whole-percent changes (angr fires it thousands
+    # of times) so we don't flood the orchestrator with JSON lines.
+    last_pct = [-1]
+
+    def cfg_progress(percentage, text=None, **kwargs):
+        pct = int(percentage)
+        if pct != last_pct[0]:
+            last_pct[0] = pct
+            emit({"kind": "progress", "stage": "cfg", "percent": pct})
+
     try:
+        emit({"kind": "progress", "stage": "load"})
         proj = angr.Project(args.binary, auto_load_libs=args.load_libs)
-        proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
+        emit({"kind": "progress", "stage": "cfg", "percent": 0})
+        proj.analyses.CFGFast(
+            force_smart_scan=False, normalize=True, progress_callback=cfg_progress
+        )
     except Exception as exc:
         emit({"kind": "fatal", "message": f"loading/CFG failed: {exc!r}"})
         return 1
 
+    emit({"kind": "progress", "stage": "save"})
     tmp = f"{args.db}.tmp.{os.getpid()}"
     try:
         AngrDB(project=proj).dump(tmp)
@@ -214,6 +230,10 @@ def decompile_db(AngrDB, args) -> int:
     sections = build_section_index(proj)
     functions = candidate_functions(proj, args)
     stripe = functions[args.index :: args.count]
+
+    # Tell the orchestrator how many functions this worker will handle so it
+    # can sum them into a grand total for the progress display.
+    emit({"kind": "plan", "count": len(stripe)})
 
     for func in stripe:
         base = {

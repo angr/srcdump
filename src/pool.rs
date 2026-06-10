@@ -4,13 +4,19 @@
 //! interpreter. Worker *i* of *N* handles `functions[i::N]` of the same
 //! deterministically-sorted candidate list, so the union of all workers covers
 //! the binary exactly once with no coordination between them.
+//!
+//! Worker stdout (newline-delimited JSON) is consumed as it arrives so the
+//! progress display can update live; stderr is drained on a side thread and
+//! surfaced only if a worker fails.
 
 use crate::backend::{DecompileBackend, DecompileRequest, DecompileResult, Mode};
 use crate::model::WorkerMessage;
+use crate::progress::Progress;
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 
 /// The Python worker, baked into the binary so srcdump stays self-contained.
@@ -39,16 +45,15 @@ impl Drop for ProcessPoolBackend {
     }
 }
 
-/// Output gathered from a single worker process.
-struct WorkerOutput {
+/// Result of running a single worker process to completion.
+struct WorkerOutcome {
     index: usize,
-    messages: Vec<WorkerMessage>,
     stderr_tail: String,
     status_ok: bool,
 }
 
 impl ProcessPoolBackend {
-    fn spawn_worker(&self, req: &DecompileRequest, mode: Mode, index: usize) -> Result<WorkerOutput> {
+    fn build_command(&self, req: &DecompileRequest, mode: Mode, index: usize) -> Command {
         let mut cmd = Command::new(&req.python);
         cmd.arg(&self.worker_script);
         // The build worker reads the binary; decompile/list workers load
@@ -78,56 +83,61 @@ impl ProcessPoolBackend {
         if req.include_plt {
             cmd.arg("--include-plt");
         }
+        cmd
+    }
 
-        let mut child = cmd
+    /// Spawn one worker and stream its messages to `sink` as they arrive.
+    ///
+    /// stdout is parsed on the calling thread; stderr is drained on a side
+    /// thread (so a noisy worker can never deadlock on a full pipe).
+    fn run_worker(
+        &self,
+        req: &DecompileRequest,
+        mode: Mode,
+        index: usize,
+        mut sink: impl FnMut(WorkerMessage),
+    ) -> Result<WorkerOutcome> {
+        let mut child = self
+            .build_command(req, mode, index)
             .spawn()
             .with_context(|| format!("spawning worker via `{}`", req.python))?;
 
-        // Drain stdout and stderr on separate threads so a worker that produces
-        // a lot of output can never deadlock on a full pipe.
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-
-        let stdout_handle = thread::spawn(move || -> Vec<WorkerMessage> {
-            let reader = BufReader::new(stdout);
-            let mut msgs = Vec::new();
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<WorkerMessage>(&line) {
-                    Ok(msg) => msgs.push(msg),
-                    Err(_) => { /* ignore stray non-JSON output */ }
-                }
-            }
-            msgs
-        });
 
         let stderr_handle = thread::spawn(move || -> String {
             let mut buf = String::new();
             let mut reader = BufReader::new(stderr);
             let _ = reader.read_to_string(&mut buf);
-            // Keep only the tail to surface on failure without flooding.
             tail_lines(&buf, 20)
         });
 
-        let messages = stdout_handle.join().map_err(|_| anyhow!("stdout thread panicked"))?;
-        let stderr_tail = stderr_handle.join().map_err(|_| anyhow!("stderr thread panicked"))?;
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(msg) = serde_json::from_str::<WorkerMessage>(&line) {
+                sink(msg);
+            }
+        }
+
+        let stderr_tail = stderr_handle
+            .join()
+            .map_err(|_| anyhow!("stderr thread panicked"))?;
         let status = child.wait().context("waiting on worker")?;
 
-        Ok(WorkerOutput {
+        Ok(WorkerOutcome {
             index,
-            messages,
             stderr_tail,
             status_ok: status.success(),
         })
     }
-}
 
-impl ProcessPoolBackend {
     /// Make sure the cached CFG angrdb exists, building it once if needed.
-    fn ensure_db(&self, req: &DecompileRequest) -> Result<()> {
+    /// Streams the build worker's loading/CFG progress to `progress`.
+    fn ensure_db(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<()> {
         if !req.rebuild && req.db_path.exists() {
             return Ok(());
         }
@@ -136,14 +146,16 @@ impl ProcessPoolBackend {
                 .with_context(|| format!("creating cache dir {}", parent.display()))?;
         }
 
-        let out = self.spawn_worker(req, Mode::Build, 0)?;
-        let fatal = out.messages.iter().find_map(|m| match m {
-            WorkerMessage::Fatal { message } => Some(message.clone()),
-            _ => None,
-        });
-        if !out.status_ok || !req.db_path.exists() {
+        let mut fatal: Option<String> = None;
+        let outcome = self.run_worker(req, Mode::Build, 0, |msg| match msg {
+            WorkerMessage::Progress { stage, percent } => progress.build_stage(&stage, percent),
+            WorkerMessage::Fatal { message } => fatal = Some(message),
+            _ => {}
+        })?;
+
+        if !outcome.status_ok || !req.db_path.exists() {
             let detail = fatal
-                .or_else(|| (!out.stderr_tail.is_empty()).then(|| out.stderr_tail.clone()))
+                .or_else(|| (!outcome.stderr_tail.is_empty()).then(|| outcome.stderr_tail.clone()))
                 .unwrap_or_else(|| "build worker produced no angrdb".to_string());
             bail!("failed to build CFG cache: {detail}");
         }
@@ -152,49 +164,71 @@ impl ProcessPoolBackend {
 }
 
 impl DecompileBackend for ProcessPoolBackend {
-    fn run(&self, req: &DecompileRequest) -> Result<DecompileResult> {
+    fn run(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<DecompileResult> {
         // Recover the CFG once into the shared angrdb, then fan out workers
         // that each load it instead of rebuilding the CFG.
-        self.ensure_db(req)?;
+        self.ensure_db(req, progress)?;
+        progress.begin_work();
 
-        // Spawn every worker on its own thread; each thread owns one subprocess
-        // end-to-end (spawn, drain, wait).
-        let outputs: Vec<Result<WorkerOutput>> = thread::scope(|scope| {
+        let mut result = DecompileResult::default();
+        let mut fatals = Vec::new();
+
+        // Each worker streams its messages over the channel; this (main) thread
+        // consumes them, updating progress and accumulating results live.
+        let (tx, rx) = mpsc::channel::<(usize, WorkerMessage)>();
+        let outcomes: Vec<Result<WorkerOutcome>> = thread::scope(|scope| {
             let handles: Vec<_> = (0..req.jobs)
-                .map(|index| scope.spawn(move || self.spawn_worker(req, req.mode, index)))
+                .map(|index| {
+                    let tx = tx.clone();
+                    scope.spawn(move || {
+                        self.run_worker(req, req.mode, index, |m| {
+                            let _ = tx.send((index, m));
+                        })
+                    })
+                })
                 .collect();
+            // Drop our own sender so `rx` closes once every worker has finished.
+            drop(tx);
+
+            for (worker_index, msg) in &rx {
+                match msg {
+                    WorkerMessage::Function(f) => {
+                        result.functions.push(f);
+                        progress.inc_done();
+                    }
+                    WorkerMessage::Error(e) => {
+                        result.errors.push(e);
+                        progress.inc_done();
+                    }
+                    WorkerMessage::Plan { count } => progress.add_total(count),
+                    WorkerMessage::Meta { file_format } => {
+                        if result.file_format.is_none() {
+                            result.file_format = Some(file_format);
+                        }
+                    }
+                    WorkerMessage::Fatal { message } => {
+                        fatals.push(format!("worker {worker_index}: {message}"))
+                    }
+                    WorkerMessage::Progress { .. } => {}
+                }
+            }
+
             handles
                 .into_iter()
                 .map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("worker thread panicked"))))
                 .collect()
         });
 
-        let mut result = DecompileResult::default();
-        let mut fatals = Vec::new();
-        for out in outputs {
-            let out = out?;
-            for msg in out.messages {
-                match msg {
-                    WorkerMessage::Function(f) => result.functions.push(f),
-                    WorkerMessage::Error(e) => result.errors.push(e),
-                    WorkerMessage::Fatal { message } => {
-                        fatals.push(format!("worker {}: {}", out.index, message))
-                    }
-                    WorkerMessage::Meta { file_format } => {
-                        if result.file_format.is_none() {
-                            result.file_format = Some(file_format);
-                        }
-                    }
-                }
-            }
-            if !out.status_ok && fatals.is_empty() {
+        for outcome in outcomes {
+            let outcome = outcome?;
+            if !outcome.status_ok && fatals.is_empty() {
                 fatals.push(format!(
                     "worker {} exited non-zero{}",
-                    out.index,
-                    if out.stderr_tail.is_empty() {
+                    outcome.index,
+                    if outcome.stderr_tail.is_empty() {
                         String::new()
                     } else {
-                        format!(":\n{}", out.stderr_tail)
+                        format!(":\n{}", outcome.stderr_tail)
                     }
                 ));
             }

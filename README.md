@@ -69,7 +69,25 @@ Options:
       --rebuild               Rebuild the cached CFG even if one exists
       --cache-dir <DIR>       Override the CFG cache location
       --python <PATH>         Interpreter to run workers with
+      --progress <WHEN>       Progress display: auto (default), always, never
 ```
+
+### Progress
+
+A live progress line is written to **stderr** (so redirected/piped stdout stays
+clean), walking through the pipeline:
+
+```
+Loading binary…
+Building CFG   42%
+Decompiling 31/43  [█████████████████░░░░░░░]  72%  ETA 0:01
+Decompiled 43 function(s) in 0:14
+```
+
+The function counter sums each worker's stripe, and the ETA is extrapolated from
+the observed completion rate. On a warm cache the load/CFG stages are skipped.
+Shown only on a TTY by default; force with `--progress always` or silence with
+`--progress never`.
 
 ### Choosing the interpreter
 

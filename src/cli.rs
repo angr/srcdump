@@ -1,5 +1,6 @@
 //! Command-line interface — deliberately objdump-flavored.
 
+use crate::progress::ProgressMode;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -47,6 +48,10 @@ pub struct Cli {
     /// $SRCDUMP_PYTHON, then $VIRTUAL_ENV/bin/python, then `python3`.
     #[arg(long = "python", value_name = "PATH")]
     pub python: Option<String>,
+
+    /// When to show the progress display on stderr.
+    #[arg(long = "progress", value_enum, default_value_t = ProgressMode::Auto)]
+    pub progress: ProgressMode,
 }
 
 impl Cli {

@@ -26,6 +26,17 @@ pub enum WorkerMessage {
         /// objdump/BFD-style file format, e.g. `elf64-x86-64`.
         file_format: String,
     },
+    /// Coarse progress from the build worker (loading / CFG recovery).
+    Progress {
+        /// Stage label: `load`, `cfg`, or `save`.
+        stage: String,
+        /// Percentage complete for the stage, when known (CFG recovery).
+        #[serde(default)]
+        percent: Option<f64>,
+    },
+    /// How many functions this worker is about to process (its stripe size).
+    /// The orchestrator sums these to learn the grand total.
+    Plan { count: usize },
 }
 
 /// Metadata plus (optionally) decompiled text for one function.
