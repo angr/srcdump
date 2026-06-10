@@ -1,5 +1,5 @@
 [package]
-name = "sourcedump"
+name = "srcdump"
 version = "0.1.0"
 edition = "2021"
 description = "objdump-like tool that displays decompiled code, backed by angr"
@@ -7,7 +7,7 @@ license = "BSD-2-Clause"
 readme = "README.md"
 
 [[bin]]
-name = "sourcedump"
+name = "srcdump"
 path = "src/main.rs"
 
 [dependencies]

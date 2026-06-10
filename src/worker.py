@@ -1,4 +1,4 @@
-"""sourcedump worker.
+"""srcdump worker.
 
 Run by the Rust orchestrator, one process per CPU. Each worker independently
 loads the target binary with angr, recovers the CFG, deterministically sorts
@@ -33,7 +33,7 @@ def emit(obj: dict) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(prog="sourcedump-worker", add_help=False)
+    ap = argparse.ArgumentParser(prog="srcdump-worker", add_help=False)
     # Required only for `build`; decompile/list workers load from --db.
     ap.add_argument("binary", nargs="?")
     ap.add_argument("--db", required=True)

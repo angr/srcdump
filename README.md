@@ -1,25 +1,25 @@
-# sourcedump
+# srcdump
 
 An `objdump`-like tool that prints **decompiled code** instead of disassembly,
 using [angr](https://github.com/angr/angr) as the binary-loading and
 decompilation backend.
 
 ```
-$ sourcedump /bin/true            # decompile the whole binary
-$ sourcedump -f main /bin/true     # just one function (by name or 0xADDR)
-$ sourcedump -l /bin/true          # list functions, don't decompile
-$ sourcedump -j16 ./big_binary     # 16 parallel workers
+$ srcdump /bin/true            # decompile the whole binary
+$ srcdump -f main /bin/true     # just one function (by name or 0xADDR)
+$ srcdump -l /bin/true          # list functions, don't decompile
+$ srcdump -j16 ./big_binary     # 16 parallel workers
 ```
 
 ## How it works
 
-`sourcedump` is a thin Rust orchestrator. The heavy lifting (loading, CFG
+`srcdump` is a thin Rust orchestrator. The heavy lifting (loading, CFG
 recovery, decompilation) happens in angr, which is Python. To get real
 parallelism past the GIL, the Rust binary fans the work out across **one Python
 worker process per CPU**:
 
 ```
-            ┌─────────── sourcedump (Rust) ───────────┐
+            ┌─────────── srcdump (Rust) ───────────┐
             │  parse CLI, resolve interpreter, merge   │
             └───────┬──────────┬──────────┬────────────┘
                     │          │          │   spawn N workers
@@ -44,7 +44,7 @@ and prints it.
 The angrdb is keyed by the SHA-256 of the binary's contents:
 
 ```
-${XDG_CACHE_HOME:-~/.cache}/sourcedump/<sha256>/db.adb
+${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/db.adb
 ```
 
 `--load-libs` recovers a different CFG, so it is cached separately as
@@ -58,7 +58,7 @@ than aborting the whole dump.
 ## Usage
 
 ```
-sourcedump [OPTIONS] <FILE>
+srcdump [OPTIONS] <FILE>
 
 Options:
   -f, --function <NAME|ADDR>  Only decompile these functions (repeatable)
@@ -76,7 +76,7 @@ Options:
 Workers need a Python with angr installed. Resolution order:
 
 1. `--python <PATH>`
-2. `$SOURCEDUMP_PYTHON`
+2. `$SRCDUMP_PYTHON`
 3. `$VIRTUAL_ENV/bin/python` (i.e. an activated virtualenv)
 4. `python3` on `PATH`
 

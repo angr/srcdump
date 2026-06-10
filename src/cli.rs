@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 /// objdump-like tool that displays decompiled code instead of disassembly.
 ///
-/// By default `sourcedump FILE` decompiles every recovered function in the
+/// By default `srcdump FILE` decompiles every recovered function in the
 /// binary, fanning the work out across one Python/angr worker per CPU.
 #[derive(Debug, Parser)]
-#[command(name = "sourcedump", version, about, long_about = None)]
+#[command(name = "srcdump", version, about, long_about = None)]
 pub struct Cli {
     /// The binary to decompile.
     pub file: PathBuf,
@@ -38,13 +38,13 @@ pub struct Cli {
     #[arg(long = "rebuild")]
     pub rebuild: bool,
 
-    /// Directory for the CFG cache (default: $XDG_CACHE_HOME/sourcedump or
-    /// ~/.cache/sourcedump).
+    /// Directory for the CFG cache (default: $XDG_CACHE_HOME/srcdump or
+    /// ~/.cache/srcdump).
     #[arg(long = "cache-dir", value_name = "DIR")]
     pub cache_dir: Option<PathBuf>,
 
     /// Python interpreter to run workers with. Falls back to
-    /// $SOURCEDUMP_PYTHON, then $VIRTUAL_ENV/bin/python, then `python3`.
+    /// $SRCDUMP_PYTHON, then $VIRTUAL_ENV/bin/python, then `python3`.
     #[arg(long = "python", value_name = "PATH")]
     pub python: Option<String>,
 }

@@ -1,4 +1,4 @@
-//! sourcedump — an objdump-like front end that prints decompiled code.
+//! srcdump — an objdump-like front end that prints decompiled code.
 //!
 //! The binary is a pure orchestrator: it shards decompilation across a pool of
 //! Python/angr worker processes and merges their output. See `worker.py` for
@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("sourcedump: error: {err:#}");
+        eprintln!("srcdump: error: {err:#}");
         std::process::exit(1);
     }
 }
@@ -83,18 +83,18 @@ fn cache_db_path(cli: &Cli) -> Result<PathBuf> {
 }
 
 /// Base directory for the cache: `--cache-dir`, else `$XDG_CACHE_HOME`, else
-/// `$HOME/.cache`, else the system temp dir — each with a `sourcedump` suffix.
+/// `$HOME/.cache`, else the system temp dir — each with a `srcdump` suffix.
 fn cache_root(cli: &Cli) -> PathBuf {
     if let Some(dir) = &cli.cache_dir {
         return dir.clone();
     }
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(xdg).join("sourcedump");
+        return PathBuf::from(xdg).join("srcdump");
     }
     if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(home).join(".cache").join("sourcedump");
+        return PathBuf::from(home).join(".cache").join("srcdump");
     }
-    std::env::temp_dir().join("sourcedump")
+    std::env::temp_dir().join("srcdump")
 }
 
 /// Streaming SHA-256 of a file's contents, hex-encoded.
@@ -120,13 +120,13 @@ fn sha256_file(path: &std::path::Path) -> io::Result<String> {
 
 /// Resolve the Python interpreter used to run workers.
 ///
-/// Precedence: `--python` flag, then `$SOURCEDUMP_PYTHON`, then an active
+/// Precedence: `--python` flag, then `$SRCDUMP_PYTHON`, then an active
 /// virtualenv (`$VIRTUAL_ENV/bin/python`), then plain `python3` on PATH.
 fn resolve_python(flag: Option<&str>) -> String {
     if let Some(p) = flag {
         return p.to_string();
     }
-    if let Ok(p) = std::env::var("SOURCEDUMP_PYTHON") {
+    if let Ok(p) = std::env::var("SRCDUMP_PYTHON") {
         if !p.is_empty() {
             return p;
         }

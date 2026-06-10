@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 
-/// The Python worker, baked into the binary so sourcedump stays self-contained.
+/// The Python worker, baked into the binary so srcdump stays self-contained.
 const WORKER_SOURCE: &str = include_str!("worker.py");
 
 pub struct ProcessPoolBackend {
@@ -24,7 +24,7 @@ impl ProcessPoolBackend {
     /// Materialize the embedded worker script to a temp file for this process.
     pub fn new() -> Result<Self> {
         let mut path = std::env::temp_dir();
-        path.push(format!("sourcedump_worker_{}.py", std::process::id()));
+        path.push(format!("srcdump_worker_{}.py", std::process::id()));
         std::fs::write(&path, WORKER_SOURCE)
             .with_context(|| format!("writing worker script to {}", path.display()))?;
         Ok(Self {
