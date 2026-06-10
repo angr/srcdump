@@ -1,0 +1,22 @@
+[package]
+name = "sourcedump"
+version = "0.1.0"
+edition = "2021"
+description = "objdump-like tool that displays decompiled code, backed by angr"
+license = "BSD-2-Clause"
+readme = "README.md"
+
+[[bin]]
+name = "sourcedump"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+num_cpus = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
