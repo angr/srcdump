@@ -81,3 +81,49 @@ pub fn print_listing(out: &mut impl Write, file: &Path, res: &DecompileResult) -
     }
     Ok(())
 }
+
+/// Print the `n` slowest functions to decompile, descending by time.
+pub fn print_slowest(
+    out: &mut impl Write,
+    file: &Path,
+    res: &DecompileResult,
+    n: usize,
+) -> io::Result<()> {
+    // Only functions that were actually decompiled carry a timing.
+    let mut timed: Vec<&FunctionInfo> = res
+        .functions
+        .iter()
+        .filter(|f| f.decompile_ms.is_some())
+        .collect();
+    timed.sort_by(|a, b| {
+        let (ta, tb) = (a.decompile_ms.unwrap_or(0.0), b.decompile_ms.unwrap_or(0.0));
+        tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let shown = n.min(timed.len());
+    writeln!(
+        out,
+        "// srcdump: {} — {} slowest of {} function(s) by decompile time",
+        file.display(),
+        shown,
+        timed.len()
+    )?;
+    writeln!(
+        out,
+        "{:>4}  {:>11}  {:<18}  {:<8}  NAME",
+        "RANK", "TIME(ms)", "ADDRESS", "SECTION"
+    )?;
+    for (i, func) in timed.iter().take(n).enumerate() {
+        writeln!(
+            out,
+            "{:>4}  {:>11.1}  0x{:016x}  {:<8}  {}{}",
+            i + 1,
+            func.decompile_ms.unwrap_or(0.0),
+            func.addr,
+            section_name(func),
+            func.name,
+            if func.is_plt { "  [plt]" } else { "" }
+        )?;
+    }
+    Ok(())
+}

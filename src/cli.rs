@@ -23,6 +23,11 @@ pub struct Cli {
     #[arg(short = 'l', long = "list")]
     pub list: bool,
 
+    /// Report the N slowest functions by decompilation time (descending),
+    /// instead of printing decompiled code.
+    #[arg(long = "slowest", value_name = "N", conflicts_with = "list")]
+    pub slowest: Option<usize>,
+
     /// Number of parallel worker processes (default: number of CPUs).
     #[arg(short = 'j', long = "jobs", value_name = "N")]
     pub jobs: Option<usize>,

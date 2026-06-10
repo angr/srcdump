@@ -65,11 +65,15 @@ fn run() -> Result<()> {
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    match mode {
-        Mode::List => output::print_listing(&mut out, &cli.file, &result)?,
-        // `mode` is only ever List or Decompile here; Build is internal to the pool.
-        Mode::Decompile | Mode::Build => {
-            output::print_decompilation(&mut out, &cli.file, &result)?
+    if let Some(n) = cli.slowest {
+        output::print_slowest(&mut out, &cli.file, &result, n)?;
+    } else {
+        match mode {
+            Mode::List => output::print_listing(&mut out, &cli.file, &result)?,
+            // `mode` is only ever List or Decompile here; Build is internal to the pool.
+            Mode::Decompile | Mode::Build => {
+                output::print_decompilation(&mut out, &cli.file, &result)?
+            }
         }
     }
     out.flush()?;

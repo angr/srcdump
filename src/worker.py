@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 
 def emit(obj: dict) -> None:
@@ -247,7 +248,9 @@ def decompile_db(AngrDB, args) -> int:
             emit({"kind": "function", "text": None, **base})
             continue
         try:
+            t0 = time.perf_counter()
             dec = proj.analyses.Decompiler(func, cfg=cfg_model)
+            decompile_ms = round((time.perf_counter() - t0) * 1000.0, 3)
             if dec.codegen is None or dec.codegen.text is None:
                 emit({
                     "kind": "error",
@@ -256,7 +259,12 @@ def decompile_db(AngrDB, args) -> int:
                     "message": "decompiler produced no output",
                 })
             else:
-                emit({"kind": "function", "text": dec.codegen.text, **base})
+                emit({
+                    "kind": "function",
+                    "text": dec.codegen.text,
+                    "decompile_ms": decompile_ms,
+                    **base,
+                })
         except Exception as exc:
             emit({
                 "kind": "error",

@@ -63,6 +63,7 @@ srcdump [OPTIONS] <FILE>
 Options:
   -f, --function <NAME|ADDR>  Only decompile these functions (repeatable)
   -l, --list                  List functions instead of decompiling
+      --slowest <N>           Report the N slowest functions by decompile time
   -j, --jobs <N>              Parallel workers (default: CPU count)
       --load-libs             Enable angr's auto_load_libs (off by default)
       --include-plt           Include PLT stubs in the output
@@ -88,6 +89,21 @@ The function counter sums each worker's stripe, and the ETA is extrapolated from
 the observed completion rate. On a warm cache the load/CFG stages are skipped.
 Shown only on a TTY by default; force with `--progress always` or silence with
 `--progress never`.
+
+### Profiling decompile time
+
+`--slowest <N>` decompiles the selected functions (whole binary by default, or
+whatever `-f` selects), times each one, and prints the N slowest descending —
+useful for finding which functions dominate a dump:
+
+```
+$ srcdump --slowest 5 ./program
+// srcdump: ./program — 5 slowest of 312 function(s) by decompile time
+RANK     TIME(ms)  ADDRESS             SECTION   NAME
+   1      10798.3  0x0000000000401d30  .text     sub_401d30
+   2       2018.3  0x0000000000404290  .text     sub_404290
+   ...
+```
 
 ### Choosing the interpreter
 

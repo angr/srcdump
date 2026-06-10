@@ -58,6 +58,10 @@ pub struct FunctionInfo {
     /// Decompiled C-like source. `None` in list mode.
     #[serde(default)]
     pub text: Option<String>,
+    /// Wall-clock time the decompiler spent on this function, in milliseconds.
+    /// `None` in list mode (or if the function failed).
+    #[serde(default)]
+    pub decompile_ms: Option<f64>,
 }
 
 /// A function that could not be decompiled.
