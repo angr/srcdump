@@ -1,18 +1,40 @@
 //! Rendering of results to stdout, objdump-flavored.
 
 use crate::backend::DecompileResult;
+use crate::model::FunctionInfo;
 use std::io::{self, Write};
 use std::path::Path;
 
-/// Print decompiled functions (and per-function errors) in address order.
-pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io::Result<()> {
-    writeln!(out, "// sourcedump: {}", file.display())?;
-    writeln!(out)?;
+/// Section label to use when a function isn't inside any named section.
+const UNKNOWN_SECTION: &str = "<unknown>";
 
+fn section_name(func: &FunctionInfo) -> &str {
+    func.section.as_deref().unwrap_or(UNKNOWN_SECTION)
+}
+
+/// objdump's banner line: `<path>:     file format <fmt>`.
+fn print_header(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io::Result<()> {
+    let fmt = res.file_format.as_deref().unwrap_or("unknown");
+    writeln!(out, "{}:     file format {}", file.display(), fmt)
+}
+
+/// Print decompiled functions grouped by section, in address order.
+pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io::Result<()> {
+    print_header(out, file, res)?;
+
+    // Functions arrive sorted by address and sections occupy disjoint address
+    // ranges, so a section boundary is just a change in the section name of
+    // consecutive functions.
+    let mut current: Option<&str> = None;
     for func in &res.functions {
+        let sec = section_name(func);
+        if current != Some(sec) {
+            writeln!(out, "\nDecompilation of section {sec}:")?;
+            current = Some(sec);
+        }
         writeln!(
             out,
-            "//{} 0x{:x} <{}>{}",
+            "\n//{} 0x{:x} <{}>{}",
             if func.is_plt { " [plt]" } else { "" },
             func.addr,
             func.name,
@@ -25,11 +47,10 @@ pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileRes
         if let Some(text) = &func.text {
             writeln!(out, "{}", text.trim_end())?;
         }
-        writeln!(out)?;
     }
 
     if !res.errors.is_empty() {
-        writeln!(out, "// --- {} function(s) failed to decompile ---", res.errors.len())?;
+        writeln!(out, "\n// --- {} function(s) failed to decompile ---", res.errors.len())?;
         for err in &res.errors {
             writeln!(out, "// 0x{:x} <{}>: {}", err.addr, err.name, err.message)?;
         }
@@ -37,11 +58,18 @@ pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileRes
     Ok(())
 }
 
-/// Print a function listing (no decompilation), objdump -t flavored.
+/// Print a function listing (no decompilation), grouped by section.
 pub fn print_listing(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io::Result<()> {
-    writeln!(out, "// sourcedump function list: {}", file.display())?;
-    writeln!(out, "{:<18}  {:>8}  NAME", "ADDRESS", "SIZE")?;
+    print_header(out, file, res)?;
+
+    let mut current: Option<&str> = None;
     for func in &res.functions {
+        let sec = section_name(func);
+        if current != Some(sec) {
+            writeln!(out, "\nDecompilation of section {sec}:\n")?;
+            writeln!(out, "{:<18}  {:>8}  NAME", "ADDRESS", "SIZE")?;
+            current = Some(sec);
+        }
         writeln!(
             out,
             "0x{:016x}  {:>8}  {}{}",
@@ -51,6 +79,5 @@ pub fn print_listing(out: &mut impl Write, file: &Path, res: &DecompileResult) -
             if func.is_plt { "  [plt]" } else { "" }
         )?;
     }
-    writeln!(out, "// {} function(s)", res.functions.len())?;
     Ok(())
 }

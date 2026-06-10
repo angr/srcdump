@@ -142,6 +142,11 @@ impl DecompileBackend for ProcessPoolBackend {
                     WorkerMessage::Fatal { message } => {
                         fatals.push(format!("worker {}: {}", out.index, message))
                     }
+                    WorkerMessage::Meta { file_format } => {
+                        if result.file_format.is_none() {
+                            result.file_format = Some(file_format);
+                        }
+                    }
                 }
             }
             if !out.status_ok && fatals.is_empty() {

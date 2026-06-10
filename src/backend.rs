@@ -43,6 +43,8 @@ pub struct DecompileRequest {
 /// Aggregated output of a job, already merged across all workers.
 #[derive(Debug, Default)]
 pub struct DecompileResult {
+    /// objdump/BFD-style file format, e.g. `elf64-x86-64`.
+    pub file_format: Option<String>,
     /// Functions, sorted by address.
     pub functions: Vec<FunctionInfo>,
     /// Per-function decompilation failures, sorted by address.

@@ -9,8 +9,9 @@ list, the stripes partition the work with no coordination.
 Output protocol: one JSON object per line on stdout. angr's own logging goes
 to stderr, so stdout stays clean for the orchestrator to parse.
 
+    {"kind": "meta", "file_format": "elf64-x86-64"}
     {"kind": "function", "addr": .., "name": .., "size": .., "is_plt": ..,
-     "text": "<decompiled source>" | null}
+     "section": ".text", "text": "<decompiled source>" | null}
     {"kind": "error", "addr": .., "name": .., "message": ..}
     {"kind": "fatal", "message": ..}
 """
@@ -61,6 +62,65 @@ def matches_filters(func, filters: list[str]) -> bool:
     return False
 
 
+# archinfo arch name -> objdump/BFD file-format name. Endianness-sensitive
+# arches resolve through the `little` branch at lookup time.
+def file_format(proj) -> str:
+    mo = proj.loader.main_object
+    backend = type(mo).__name__
+    arch = proj.arch
+    bits = arch.bits
+    little = arch.memory_endness == "Iend_LE"
+
+    if backend == "ELF":
+        name = arch.name
+        table = {
+            "AMD64": "elf64-x86-64",
+            "X86": "elf32-i386",
+            "AARCH64": "elf64-littleaarch64" if little else "elf64-bigaarch64",
+            "ARMEL": "elf32-littlearm" if little else "elf32-bigarm",
+            "ARMHF": "elf32-littlearm",
+            "ARMCortexM": "elf32-littlearm",
+            "MIPS32": "elf32-littlemips" if little else "elf32-bigmips",
+            "MIPS64": "elf64-littlemips" if little else "elf64-bigmips",
+            "PPC32": "elf32-powerpcle" if little else "elf32-powerpc",
+            "PPC64": "elf64-powerpcle" if little else "elf64-powerpc",
+            "S390X": "elf64-s390",
+            "RISCV64": "elf64-littleriscv",
+            "RISCV32": "elf32-littleriscv",
+        }
+        fmt = table.get(name)
+        if fmt is not None:
+            return fmt
+        endian = "little" if little else "big"
+        return f"elf{bits}-{endian}{getattr(arch, 'linux_name', None) or name.lower()}"
+
+    if backend == "PE":
+        return "pei-x86-64" if bits == 64 else "pei-i386"
+    if backend.startswith("MachO"):
+        return "mach-o-x86-64" if bits == 64 else "mach-o-i386"
+    return backend.lower()
+
+
+def build_section_index(proj):
+    """Sorted [(start, end, name)] of named sections, for address lookup."""
+    mo = proj.loader.main_object
+    secs = [
+        (s.vaddr, s.vaddr + max(s.memsize, 1), s.name)
+        for s in mo.sections
+        if s.name
+    ]
+    secs.sort()
+    return secs
+
+
+def section_of(secs, addr):
+    """Name of the section containing `addr`, or None."""
+    for start, end, name in secs:
+        if start <= addr < end:
+            return name
+    return None
+
+
 def candidate_functions(proj, cfg, args) -> list:
     """Deterministically-ordered list of functions this run should consider."""
     main_obj = proj.loader.main_object
@@ -68,7 +128,7 @@ def candidate_functions(proj, cfg, args) -> list:
     for func in cfg.kb.functions.values():
         if func.is_simprocedure or func.is_syscall:
             continue
-        if getattr(func, "is_alignment", False):
+        if func.is_alignment:
             continue
         if func.is_plt and not args.include_plt:
             continue
@@ -101,11 +161,15 @@ def main(argv: list[str]) -> int:
 
     try:
         proj = angr.Project(args.binary, auto_load_libs=args.load_libs)
-        cfg = proj.analyses.CFGFast(normalize=True)
+        cfg = proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
     except Exception as exc:
         emit({"kind": "fatal", "message": f"loading/CFG failed: {exc!r}"})
         return 1
 
+    # Every worker reports the file format; the orchestrator keeps the first.
+    emit({"kind": "meta", "file_format": file_format(proj)})
+
+    sections = build_section_index(proj)
     functions = candidate_functions(proj, cfg, args)
     stripe = functions[args.index :: args.count]
 
@@ -115,6 +179,7 @@ def main(argv: list[str]) -> int:
             "name": func.name,
             "size": int(func.size or 0),
             "is_plt": bool(func.is_plt),
+            "section": section_of(sections, func.addr),
         }
         if args.mode == "list":
             emit({"kind": "function", "text": None, **base})

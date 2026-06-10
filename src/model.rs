@@ -20,6 +20,12 @@ pub enum WorkerMessage {
     /// A fatal, worker-level problem (bad binary, angr import failure, ...).
     /// The orchestrator surfaces this and treats the worker as failed.
     Fatal { message: String },
+    /// One-time, binary-level metadata. Every worker emits it; the
+    /// orchestrator keeps the first.
+    Meta {
+        /// objdump/BFD-style file format, e.g. `elf64-x86-64`.
+        file_format: String,
+    },
 }
 
 /// Metadata plus (optionally) decompiled text for one function.
@@ -35,6 +41,9 @@ pub struct FunctionInfo {
     /// Whether the function is a PLT stub.
     #[serde(default)]
     pub is_plt: bool,
+    /// Name of the section the function lives in (e.g. `.text`), if known.
+    #[serde(default)]
+    pub section: Option<String>,
     /// Decompiled C-like source. `None` in list mode.
     #[serde(default)]
     pub text: Option<String>,
