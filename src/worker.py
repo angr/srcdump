@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 
 
@@ -33,10 +34,12 @@ def emit(obj: dict) -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="sourcedump-worker", add_help=False)
-    ap.add_argument("binary")
-    ap.add_argument("--index", type=int, required=True)
-    ap.add_argument("--count", type=int, required=True)
-    ap.add_argument("--mode", choices=("decompile", "list"), default="decompile")
+    # Required only for `build`; decompile/list workers load from --db.
+    ap.add_argument("binary", nargs="?")
+    ap.add_argument("--db", required=True)
+    ap.add_argument("--index", type=int, default=0)
+    ap.add_argument("--count", type=int, default=1)
+    ap.add_argument("--mode", choices=("build", "decompile", "list"), default="decompile")
     ap.add_argument("--function", action="append", default=[])
     ap.add_argument("--load-libs", action="store_true")
     ap.add_argument("--include-plt", action="store_true")
@@ -121,11 +124,11 @@ def section_of(secs, addr):
     return None
 
 
-def candidate_functions(proj, cfg, args) -> list:
+def candidate_functions(proj, args) -> list:
     """Deterministically-ordered list of functions this run should consider."""
     main_obj = proj.loader.main_object
     out = []
-    for func in cfg.kb.functions.values():
+    for func in proj.kb.functions.values():
         if func.is_simprocedure or func.is_syscall:
             continue
         if func.is_alignment:
@@ -155,22 +158,61 @@ def main(argv: list[str]) -> int:
 
     try:
         import angr
+        from angr.angrdb import AngrDB
     except Exception as exc:  # pragma: no cover - environment issue
         emit({"kind": "fatal", "message": f"failed to import angr: {exc!r}"})
         return 1
 
+    if args.mode == "build":
+        return build_db(angr, AngrDB, args)
+    return decompile_db(AngrDB, args)
+
+
+def build_db(angr, AngrDB, args) -> int:
+    """Recover the CFG once and persist it to an AngrDB, atomically.
+
+    Writes to a per-process temp file then renames into place, so a concurrent
+    or interrupted build never leaves a half-written db behind.
+    """
+    if not args.binary:
+        emit({"kind": "fatal", "message": "build mode requires a binary path"})
+        return 1
     try:
         proj = angr.Project(args.binary, auto_load_libs=args.load_libs)
-        cfg = proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
+        proj.analyses.CFGFast(force_smart_scan=False, normalize=True)
     except Exception as exc:
         emit({"kind": "fatal", "message": f"loading/CFG failed: {exc!r}"})
         return 1
+
+    tmp = f"{args.db}.tmp.{os.getpid()}"
+    try:
+        AngrDB(project=proj).dump(tmp)
+        os.replace(tmp, args.db)
+    except Exception as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        emit({"kind": "fatal", "message": f"saving angrdb failed: {exc!r}"})
+        return 1
+    return 0
+
+
+def decompile_db(AngrDB, args) -> int:
+    """Load the cached CFG and decompile (or list) this worker's stripe."""
+    try:
+        proj = AngrDB().load(args.db)
+    except Exception as exc:
+        emit({"kind": "fatal", "message": f"loading angrdb {args.db!r} failed: {exc!r}"})
+        return 1
+
+    cfg_model = proj.kb.cfgs.get_most_accurate()
 
     # Every worker reports the file format; the orchestrator keeps the first.
     emit({"kind": "meta", "file_format": file_format(proj)})
 
     sections = build_section_index(proj)
-    functions = candidate_functions(proj, cfg, args)
+    functions = candidate_functions(proj, args)
     stripe = functions[args.index :: args.count]
 
     for func in stripe:
@@ -185,7 +227,7 @@ def main(argv: list[str]) -> int:
             emit({"kind": "function", "text": None, **base})
             continue
         try:
-            dec = proj.analyses.Decompiler(func, cfg=cfg.model)
+            dec = proj.analyses.Decompiler(func, cfg=cfg_model)
             if dec.codegen is None or dec.codegen.text is None:
                 emit({
                     "kind": "error",

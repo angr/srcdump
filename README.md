@@ -30,11 +30,27 @@ worker process per CPU**:
                     └──── JSON lines ─────┘   (one object per function)
 ```
 
-Every worker independently loads the binary, recovers the CFG, and builds the
-*same* deterministically-sorted candidate function list — then decompiles only
-its stripe `functions[i::N]`. The stripes partition the work exactly, with no
-shared state or coordination. The orchestrator parses each worker's JSON-line
-output, merges it in address order, and prints it.
+The CFG is recovered **once** and cached as an angrdb. A single build step runs
+`Project → CFGFast → AngrDB.dump`; every decompile/list worker then *loads* that
+db (≈0.06s) instead of rebuilding the CFG (≈0.5s+, and growing with binary
+size). Each worker builds the *same* deterministically-sorted candidate function
+list from the loaded db and decompiles only its stripe `functions[i::N]`. The
+stripes partition the work exactly, with no shared state or coordination. The
+orchestrator parses each worker's JSON-line output, merges it in address order,
+and prints it.
+
+### CFG cache
+
+The angrdb is keyed by the SHA-256 of the binary's contents:
+
+```
+${XDG_CACHE_HOME:-~/.cache}/sourcedump/<sha256>/db.adb
+```
+
+`--load-libs` recovers a different CFG, so it is cached separately as
+`db.load_libs.adb`. The build is atomic (written to a temp file then renamed),
+so concurrent or interrupted runs never leave a half-written db. Use `--rebuild`
+to force regeneration and `--cache-dir <DIR>` to relocate the cache.
 
 A function that fails to decompile is reported as a placeholder comment rather
 than aborting the whole dump.
@@ -50,6 +66,8 @@ Options:
   -j, --jobs <N>              Parallel workers (default: CPU count)
       --load-libs             Enable angr's auto_load_libs (off by default)
       --include-plt           Include PLT stubs in the output
+      --rebuild               Rebuild the cached CFG even if one exists
+      --cache-dir <DIR>       Override the CFG cache location
       --python <PATH>         Interpreter to run workers with
 ```
 
@@ -77,10 +95,15 @@ interpreter at runtime.
 Decompilation dominates runtime, so parallel workers are the main speed lever.
 Current tradeoffs and planned work:
 
-- **CFG is recomputed per worker.** Cheap relative to decompilation, but it is
-  redundant. A shared CFG cache (serialize once, load in each worker) is the
-  first optimization target.
-- **Per-worker angr import + CFG startup** caps speedup on small binaries; it
-  pays off as the number/size of functions grows.
+- **CFG is recovered once and cached** (see *CFG cache* above); workers load it
+  rather than recomputing it N times.
+- **Per-worker angr import** still has a fixed cost (a few seconds), which caps
+  speedup on small binaries; it pays off as the number/size of functions grows.
+  A persistent worker pool could amortize the import — a future option.
 - Planned: result streaming (`--stream`), a `--fast` decompiler-option
   passthrough, and an output-format toggle.
+
+## Runtime dependencies
+
+The worker interpreter needs angr **and SQLAlchemy** (the latter backs angrdb).
+Install with `pip install sqlalchemy` if it's missing.

@@ -34,6 +34,15 @@ pub struct Cli {
     #[arg(long = "include-plt")]
     pub include_plt: bool,
 
+    /// Rebuild the cached CFG even if a cached angrdb already exists.
+    #[arg(long = "rebuild")]
+    pub rebuild: bool,
+
+    /// Directory for the CFG cache (default: $XDG_CACHE_HOME/sourcedump or
+    /// ~/.cache/sourcedump).
+    #[arg(long = "cache-dir", value_name = "DIR")]
+    pub cache_dir: Option<PathBuf>,
+
     /// Python interpreter to run workers with. Falls back to
     /// $SOURCEDUMP_PYTHON, then $VIRTUAL_ENV/bin/python, then `python3`.
     #[arg(long = "python", value_name = "PATH")]

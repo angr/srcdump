@@ -5,7 +5,7 @@
 //! deterministically-sorted candidate list, so the union of all workers covers
 //! the binary exactly once with no coordination between them.
 
-use crate::backend::{DecompileBackend, DecompileRequest, DecompileResult};
+use crate::backend::{DecompileBackend, DecompileRequest, DecompileResult, Mode};
 use crate::model::WorkerMessage;
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, BufReader, Read};
@@ -48,27 +48,35 @@ struct WorkerOutput {
 }
 
 impl ProcessPoolBackend {
-    fn spawn_worker(&self, req: &DecompileRequest, index: usize) -> Result<WorkerOutput> {
+    fn spawn_worker(&self, req: &DecompileRequest, mode: Mode, index: usize) -> Result<WorkerOutput> {
         let mut cmd = Command::new(&req.python);
-        cmd.arg(&self.worker_script)
-            .arg(&req.binary)
-            .arg("--index")
-            .arg(index.to_string())
-            .arg("--count")
-            .arg(req.jobs.to_string())
+        cmd.arg(&self.worker_script);
+        // The build worker reads the binary; decompile/list workers load
+        // everything they need from the cached angrdb.
+        if mode == Mode::Build {
+            cmd.arg(&req.binary);
+        }
+        cmd.arg("--db")
+            .arg(&req.db_path)
             .arg("--mode")
-            .arg(req.mode.as_arg())
+            .arg(mode.as_arg())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if mode != Mode::Build {
+            cmd.arg("--index")
+                .arg(index.to_string())
+                .arg("--count")
+                .arg(req.jobs.to_string());
+            for f in &req.functions {
+                cmd.arg("--function").arg(f);
+            }
+        }
         if req.load_libs {
             cmd.arg("--load-libs");
         }
         if req.include_plt {
             cmd.arg("--include-plt");
-        }
-        for f in &req.functions {
-            cmd.arg("--function").arg(f);
         }
 
         let mut child = cmd
@@ -117,13 +125,43 @@ impl ProcessPoolBackend {
     }
 }
 
+impl ProcessPoolBackend {
+    /// Make sure the cached CFG angrdb exists, building it once if needed.
+    fn ensure_db(&self, req: &DecompileRequest) -> Result<()> {
+        if !req.rebuild && req.db_path.exists() {
+            return Ok(());
+        }
+        if let Some(parent) = req.db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating cache dir {}", parent.display()))?;
+        }
+
+        let out = self.spawn_worker(req, Mode::Build, 0)?;
+        let fatal = out.messages.iter().find_map(|m| match m {
+            WorkerMessage::Fatal { message } => Some(message.clone()),
+            _ => None,
+        });
+        if !out.status_ok || !req.db_path.exists() {
+            let detail = fatal
+                .or_else(|| (!out.stderr_tail.is_empty()).then(|| out.stderr_tail.clone()))
+                .unwrap_or_else(|| "build worker produced no angrdb".to_string());
+            bail!("failed to build CFG cache: {detail}");
+        }
+        Ok(())
+    }
+}
+
 impl DecompileBackend for ProcessPoolBackend {
     fn run(&self, req: &DecompileRequest) -> Result<DecompileResult> {
+        // Recover the CFG once into the shared angrdb, then fan out workers
+        // that each load it instead of rebuilding the CFG.
+        self.ensure_db(req)?;
+
         // Spawn every worker on its own thread; each thread owns one subprocess
         // end-to-end (spawn, drain, wait).
         let outputs: Vec<Result<WorkerOutput>> = thread::scope(|scope| {
             let handles: Vec<_> = (0..req.jobs)
-                .map(|index| scope.spawn(move || self.spawn_worker(req, index)))
+                .map(|index| scope.spawn(move || self.spawn_worker(req, req.mode, index)))
                 .collect();
             handles
                 .into_iter()

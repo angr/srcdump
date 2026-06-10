@@ -11,6 +11,8 @@ use std::path::PathBuf;
 /// What the workers should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
+    /// Recover the CFG and persist it to an angrdb (one-shot, internal).
+    Build,
     /// Fully decompile each function.
     Decompile,
     /// Only enumerate functions (no decompilation).
@@ -20,6 +22,7 @@ pub enum Mode {
 impl Mode {
     pub fn as_arg(self) -> &'static str {
         match self {
+            Mode::Build => "build",
             Mode::Decompile => "decompile",
             Mode::List => "list",
         }
@@ -38,6 +41,10 @@ pub struct DecompileRequest {
     pub mode: Mode,
     /// Python interpreter to launch workers with.
     pub python: String,
+    /// Where the cached CFG angrdb lives.
+    pub db_path: PathBuf,
+    /// Rebuild the cached angrdb even if it already exists.
+    pub rebuild: bool,
 }
 
 /// Aggregated output of a job, already merged across all workers.

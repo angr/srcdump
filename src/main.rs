@@ -15,7 +15,10 @@ use backend::{DecompileBackend, DecompileRequest, Mode};
 use clap::Parser;
 use cli::Cli;
 use pool::ProcessPoolBackend;
-use std::io::{self, Write};
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
 
 fn main() {
     if let Err(err) = run() {
@@ -33,6 +36,7 @@ fn run() -> Result<()> {
 
     let python = resolve_python(cli.python.as_deref());
     let mode = if cli.list { Mode::List } else { Mode::Decompile };
+    let db_path = cache_db_path(&cli).context("resolving CFG cache path")?;
 
     let req = DecompileRequest {
         binary: cli.file.clone(),
@@ -42,6 +46,8 @@ fn run() -> Result<()> {
         jobs: cli.job_count(),
         mode,
         python,
+        db_path,
+        rebuild: cli.rebuild,
     };
 
     let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
@@ -51,10 +57,65 @@ fn run() -> Result<()> {
     let mut out = io::BufWriter::new(stdout.lock());
     match mode {
         Mode::List => output::print_listing(&mut out, &cli.file, &result)?,
-        Mode::Decompile => output::print_decompilation(&mut out, &cli.file, &result)?,
+        // `mode` is only ever List or Decompile here; Build is internal to the pool.
+        Mode::Decompile | Mode::Build => {
+            output::print_decompilation(&mut out, &cli.file, &result)?
+        }
     }
     out.flush()?;
     Ok(())
+}
+
+/// Resolve the angrdb cache path for this binary:
+/// `<cache-root>/<sha256>/db[.load_libs].adb`.
+///
+/// `auto_load_libs` changes the recovered CFG, so it is encoded in the filename
+/// to keep the two variants from colliding.
+fn cache_db_path(cli: &Cli) -> Result<PathBuf> {
+    let digest = sha256_file(&cli.file)
+        .with_context(|| format!("hashing {}", cli.file.display()))?;
+    let filename = if cli.load_libs {
+        "db.load_libs.adb"
+    } else {
+        "db.adb"
+    };
+    Ok(cache_root(cli).join(digest).join(filename))
+}
+
+/// Base directory for the cache: `--cache-dir`, else `$XDG_CACHE_HOME`, else
+/// `$HOME/.cache`, else the system temp dir — each with a `sourcedump` suffix.
+fn cache_root(cli: &Cli) -> PathBuf {
+    if let Some(dir) = &cli.cache_dir {
+        return dir.clone();
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(xdg).join("sourcedump");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(home).join(".cache").join("sourcedump");
+    }
+    std::env::temp_dir().join("sourcedump")
+}
+
+/// Streaming SHA-256 of a file's contents, hex-encoded.
+fn sha256_file(path: &std::path::Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Ok(hex)
 }
 
 /// Resolve the Python interpreter used to run workers.
