@@ -82,24 +82,29 @@ Options:
 
 When stdout is a terminal and you run a plain whole-binary decompile, srcdump
 opens an interactive browser instead of dumping text. Every function is listed
-up front (from a fast catalog pass) and each shows a **"⏳ waiting for result…"**
-banner until its decompilation streams in:
+up front (from a fast catalog pass) and shown as **one continuous document** —
+scrolling off the bottom of a function flows straight into the next. Each
+function shows a **"⏳ waiting for result…"** banner until its decompilation
+streams in:
 
 ```
- srcdump  ./program  elf64-x86-64   [3/312]   84/312 decompiled
-┌Functions───────────────┐┌0x401d30 <sub_401d30>  .text  240 ms──────────────┐
-│  · 0x401418 sub_401418 ││ long long sub_401d30(void *a0, long long a1, ...) │
-│▶ ✓ 0x4015c0 main       ││ {                                                 │
-│  ✓ 0x401670 _start     ││     unsigned long v25;  // rbp                    │
-│  · 0x401d30 sub_401d30 ││     ...                                           │
+ srcdump  ./program  elf64-x86-64   [4/312]   84/312 decompiled
+┌Functions───────────────┐┌decompilation─────────────────────────────────────┐
+│  ✓ 0x4015c0 main       ││ // 0x401670 <_start>  .text                       │
+│  ✓ 0x401670 _start     ││ void _start(...) { ... }                          │
+│▶ · 0x401d30 sub_401d30 ││ // 0x401d30 <sub_401d30>  .text                   │
+│  · 0x401e90 sub_401e90 ││     ⏳ waiting for result…                        │
 └────────────────────────┘└───────────────────────────────────────────────────┘
- ,/. switch function   j/k move line   q quit
+ j/k line   ./, function   f panel   t times   h help   q quit
 ```
 
 | Key | Action |
 |-----|--------|
-| `,` / `.` | previous / next function |
-| `j` / `k` | move the highlighted line down / up |
+| `j` / `k` | move the highlighted line down / up (crosses function boundaries) |
+| `.` / `,` | jump to the next / previous function |
+| `f` | toggle the function panel (sidebar) |
+| `t` | toggle per-function decompilation times (off by default) |
+| `h` | toggle the help panel |
 | `q`, `Esc` | quit (terminates any outstanding workers) |
 
 `--list` and `--slowest` are explicit reports that always print to stdout (no
