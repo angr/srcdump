@@ -232,6 +232,22 @@ def decompile_db(AngrDB, args) -> int:
     functions = candidate_functions(proj, args)
     stripe = functions[args.index :: args.count]
 
+    # Worker 0 publishes the full candidate list (metadata only) so the TUI can
+    # render every function up front; other workers skip this. Ignored by the
+    # plain dump path.
+    if args.index == 0:
+        catalog = [
+            {
+                "addr": int(f.addr),
+                "name": f.name,
+                "size": int(f.size or 0),
+                "is_plt": bool(f.is_plt),
+                "section": section_of(sections, f.addr),
+            }
+            for f in functions
+        ]
+        emit({"kind": "catalog", "functions": catalog})
+
     # Tell the orchestrator how many functions this worker will handle so it
     # can sum them into a grand total for the progress display.
     emit({"kind": "plan", "count": len(stripe)})

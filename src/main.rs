@@ -10,16 +10,17 @@ mod model;
 mod output;
 mod pool;
 mod progress;
+mod tui;
 
 use anyhow::{Context, Result};
 use backend::{DecompileBackend, DecompileRequest, Mode};
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, TuiMode};
 use pool::ProcessPoolBackend;
 use progress::Progress;
 use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 fn main() {
@@ -53,6 +54,21 @@ fn run() -> Result<()> {
     };
 
     let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
+
+    // The interactive TUI replaces the plain dump only for whole-binary
+    // decompilation; --list and --slowest are explicit reports that always go
+    // to stdout.
+    let want_tui = cli.slowest.is_none()
+        && !cli.list
+        && match cli.tui {
+            TuiMode::Always => true,
+            TuiMode::Never => false,
+            TuiMode::Auto => io::stdout().is_terminal(),
+        };
+    if want_tui {
+        return tui::run(backend, req, cli.file.clone());
+    }
+
     let mut progress = Progress::new(cli.progress, cli.list);
     let result = backend.run(&req, &mut progress)?;
 

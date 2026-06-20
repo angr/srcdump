@@ -1,8 +1,19 @@
 //! Command-line interface — deliberately objdump-flavored.
 
 use crate::progress::ProgressMode;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+/// When to use the interactive TUI instead of dumping to stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TuiMode {
+    /// Interactive TUI when stdout is a terminal; plain dump otherwise.
+    Auto,
+    /// Always use the interactive TUI.
+    Always,
+    /// Never use the TUI; always dump.
+    Never,
+}
 
 /// objdump-like tool that displays decompiled code instead of disassembly.
 ///
@@ -57,6 +68,11 @@ pub struct Cli {
     /// When to show the progress display on stderr.
     #[arg(long = "progress", value_enum, default_value_t = ProgressMode::Auto)]
     pub progress: ProgressMode,
+
+    /// Interactive TUI browser (default: auto = on when stdout is a terminal).
+    /// Ignored with --list or --slowest.
+    #[arg(long = "tui", value_enum, default_value_t = TuiMode::Auto)]
+    pub tui: TuiMode,
 }
 
 impl Cli {

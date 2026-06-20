@@ -6,8 +6,8 @@
 //! the binary exactly once with no coordination between them.
 //!
 //! Worker stdout (newline-delimited JSON) is consumed as it arrives so the
-//! progress display can update live; stderr is drained on a side thread and
-//! surfaced only if a worker fails.
+//! caller (progress display or TUI) can react live; stderr is drained on a side
+//! thread and surfaced only if a worker fails.
 
 use crate::backend::{DecompileBackend, DecompileRequest, DecompileResult, Mode};
 use crate::model::WorkerMessage;
@@ -16,11 +16,55 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Mutex};
 use std::thread;
 
 /// The Python worker, baked into the binary so srcdump stays self-contained.
 const WORKER_SOURCE: &str = include_str!("worker.py");
+
+/// Tracks live worker PIDs so an interactive front end can terminate them on
+/// quit instead of leaving orphaned Python processes decompiling in the
+/// background.
+#[derive(Default)]
+pub struct Cancellation {
+    cancelled: AtomicBool,
+    pids: Mutex<Vec<u32>>,
+}
+
+impl Cancellation {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Record a freshly-spawned worker. If cancellation already happened, kill
+    /// it immediately. The mutex serializes against [`Self::cancel`] so a pid
+    /// can never slip through between the check and the push.
+    fn register(&self, pid: u32) {
+        let mut pids = self.pids.lock().unwrap();
+        if self.cancelled.load(Ordering::Relaxed) {
+            kill(pid);
+        } else {
+            pids.push(pid);
+        }
+    }
+
+    /// Mark cancelled and SIGKILL every tracked worker.
+    pub fn cancel(&self) {
+        let mut pids = self.pids.lock().unwrap();
+        self.cancelled.store(true, Ordering::Relaxed);
+        for pid in pids.drain(..) {
+            kill(pid);
+        }
+    }
+}
+
+fn kill(pid: u32) {
+    // Best effort; a pid that already exited just yields ESRCH.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
 
 pub struct ProcessPoolBackend {
     worker_script: PathBuf,
@@ -95,12 +139,14 @@ impl ProcessPoolBackend {
         req: &DecompileRequest,
         mode: Mode,
         index: usize,
+        cancel: &Cancellation,
         mut sink: impl FnMut(WorkerMessage),
     ) -> Result<WorkerOutcome> {
         let mut child = self
             .build_command(req, mode, index)
             .spawn()
             .with_context(|| format!("spawning worker via `{}`", req.python))?;
+        cancel.register(child.id());
 
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -136,8 +182,13 @@ impl ProcessPoolBackend {
     }
 
     /// Make sure the cached CFG angrdb exists, building it once if needed.
-    /// Streams the build worker's loading/CFG progress to `progress`.
-    fn ensure_db(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<()> {
+    /// Forwards the build worker's loading/CFG progress messages to `sink`.
+    fn ensure_db(
+        &self,
+        req: &DecompileRequest,
+        cancel: &Cancellation,
+        sink: &mut impl FnMut(WorkerMessage),
+    ) -> Result<()> {
         if !req.rebuild && req.db_path.exists() {
             return Ok(());
         }
@@ -147,12 +198,16 @@ impl ProcessPoolBackend {
         }
 
         let mut fatal: Option<String> = None;
-        let outcome = self.run_worker(req, Mode::Build, 0, |msg| match msg {
-            WorkerMessage::Progress { stage, percent } => progress.build_stage(&stage, percent),
-            WorkerMessage::Fatal { message } => fatal = Some(message),
-            _ => {}
+        let outcome = self.run_worker(req, Mode::Build, 0, cancel, |msg| {
+            if let WorkerMessage::Fatal { message } = &msg {
+                fatal = Some(message.clone());
+            }
+            sink(msg);
         })?;
 
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
         if !outcome.status_ok || !req.db_path.exists() {
             let detail = fatal
                 .or_else(|| (!outcome.stderr_tail.is_empty()).then(|| outcome.stderr_tail.clone()))
@@ -161,28 +216,31 @@ impl ProcessPoolBackend {
         }
         Ok(())
     }
-}
 
-impl DecompileBackend for ProcessPoolBackend {
-    fn run(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<DecompileResult> {
-        // Recover the CFG once into the shared angrdb, then fan out workers
-        // that each load it instead of rebuilding the CFG.
-        self.ensure_db(req, progress)?;
-        progress.begin_work();
+    /// Run the full pipeline (ensure the CFG cache, then the decompile/list
+    /// workers), delivering every worker message to `sink` as it arrives.
+    ///
+    /// `sink` is always invoked from a single thread. Build-phase failures
+    /// return `Err`; per-worker crashes are surfaced as `Fatal` messages.
+    pub fn run_streaming(
+        &self,
+        req: &DecompileRequest,
+        cancel: &Cancellation,
+        mut sink: impl FnMut(WorkerMessage),
+    ) -> Result<()> {
+        self.ensure_db(req, cancel, &mut sink)?;
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
 
-        let mut result = DecompileResult::default();
-        let mut fatals = Vec::new();
-
-        // Each worker streams its messages over the channel; this (main) thread
-        // consumes them, updating progress and accumulating results live.
-        let (tx, rx) = mpsc::channel::<(usize, WorkerMessage)>();
+        let (tx, rx) = mpsc::channel::<WorkerMessage>();
         let outcomes: Vec<Result<WorkerOutcome>> = thread::scope(|scope| {
             let handles: Vec<_> = (0..req.jobs)
                 .map(|index| {
                     let tx = tx.clone();
                     scope.spawn(move || {
-                        self.run_worker(req, req.mode, index, |m| {
-                            let _ = tx.send((index, m));
+                        self.run_worker(req, req.mode, index, cancel, move |m| {
+                            let _ = tx.send(m);
                         })
                     })
                 })
@@ -190,27 +248,8 @@ impl DecompileBackend for ProcessPoolBackend {
             // Drop our own sender so `rx` closes once every worker has finished.
             drop(tx);
 
-            for (worker_index, msg) in &rx {
-                match msg {
-                    WorkerMessage::Function(f) => {
-                        result.functions.push(f);
-                        progress.inc_done();
-                    }
-                    WorkerMessage::Error(e) => {
-                        result.errors.push(e);
-                        progress.inc_done();
-                    }
-                    WorkerMessage::Plan { count } => progress.add_total(count),
-                    WorkerMessage::Meta { file_format } => {
-                        if result.file_format.is_none() {
-                            result.file_format = Some(file_format);
-                        }
-                    }
-                    WorkerMessage::Fatal { message } => {
-                        fatals.push(format!("worker {worker_index}: {message}"))
-                    }
-                    WorkerMessage::Progress { .. } => {}
-                }
+            for msg in &rx {
+                sink(msg);
             }
 
             handles
@@ -221,21 +260,59 @@ impl DecompileBackend for ProcessPoolBackend {
 
         for outcome in outcomes {
             let outcome = outcome?;
-            if !outcome.status_ok && fatals.is_empty() {
-                fatals.push(format!(
-                    "worker {} exited non-zero{}",
-                    outcome.index,
-                    if outcome.stderr_tail.is_empty() {
-                        String::new()
-                    } else {
-                        format!(":\n{}", outcome.stderr_tail)
-                    }
-                ));
+            // A worker killed by cancellation exits non-zero on purpose; don't
+            // report that as a failure.
+            if !outcome.status_ok && !cancel.is_cancelled() {
+                let detail = if outcome.stderr_tail.is_empty() {
+                    String::new()
+                } else {
+                    format!(":\n{}", outcome.stderr_tail)
+                };
+                sink(WorkerMessage::Fatal {
+                    message: format!("worker {} exited non-zero{}", outcome.index, detail),
+                });
             }
         }
+        Ok(())
+    }
+}
 
-        // A fatal in any worker means the binary/environment is broken the same
-        // way for all of them — surface it rather than printing a partial dump.
+impl DecompileBackend for ProcessPoolBackend {
+    fn run(&self, req: &DecompileRequest, progress: &mut Progress) -> Result<DecompileResult> {
+        let cancel = Cancellation::default();
+        let mut result = DecompileResult::default();
+        let mut fatals = Vec::new();
+        let mut began = false;
+
+        self.run_streaming(req, &cancel, |msg| {
+            // The first non-build message marks the start of the work stage.
+            if !began && !matches!(msg, WorkerMessage::Progress { .. }) {
+                progress.begin_work();
+                began = true;
+            }
+            match msg {
+                WorkerMessage::Progress { stage, percent } => progress.build_stage(&stage, percent),
+                WorkerMessage::Meta { file_format } => {
+                    if result.file_format.is_none() {
+                        result.file_format = Some(file_format);
+                    }
+                }
+                WorkerMessage::Catalog { .. } => {}
+                WorkerMessage::Plan { count } => progress.add_total(count),
+                WorkerMessage::Function(f) => {
+                    result.functions.push(f);
+                    progress.inc_done();
+                }
+                WorkerMessage::Error(e) => {
+                    result.errors.push(e);
+                    progress.inc_done();
+                }
+                WorkerMessage::Fatal { message } => fatals.push(message),
+            }
+        })?;
+
+        // A fatal with no output means the binary/environment is broken the
+        // same way for all workers — surface it rather than a partial dump.
         if result.functions.is_empty() && result.errors.is_empty() && !fatals.is_empty() {
             bail!("{}", fatals.join("\n"));
         }

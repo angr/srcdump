@@ -5,11 +5,15 @@ using [angr](https://github.com/angr/angr) as the binary-loading and
 decompilation backend.
 
 ```
-$ srcdump /bin/true            # decompile the whole binary
-$ srcdump -f main /bin/true     # just one function (by name or 0xADDR)
-$ srcdump -l /bin/true          # list functions, don't decompile
+$ srcdump ./program            # interactive TUI browser (when run in a terminal)
+$ srcdump ./program | less      # plain dump (when piped/redirected)
+$ srcdump -f main ./program     # just one function (by name or 0xADDR)
+$ srcdump -l ./program          # list functions, don't decompile
 $ srcdump -j16 ./big_binary     # 16 parallel workers
 ```
+
+Run in a terminal, srcdump opens an interactive browser; piped or redirected to a
+file, it dumps every function as text. See [Interactive TUI](#interactive-tui).
 
 ## How it works
 
@@ -71,7 +75,36 @@ Options:
       --cache-dir <DIR>       Override the CFG cache location
       --python <PATH>         Interpreter to run workers with
       --progress <WHEN>       Progress display: auto (default), always, never
+      --tui <WHEN>            Interactive browser: auto (default), always, never
 ```
+
+### Interactive TUI
+
+When stdout is a terminal and you run a plain whole-binary decompile, srcdump
+opens an interactive browser instead of dumping text. Every function is listed
+up front (from a fast catalog pass) and each shows a **"⏳ waiting for result…"**
+banner until its decompilation streams in:
+
+```
+ srcdump  ./program  elf64-x86-64   [3/312]   84/312 decompiled
+┌Functions───────────────┐┌0x401d30 <sub_401d30>  .text  240 ms──────────────┐
+│  · 0x401418 sub_401418 ││ long long sub_401d30(void *a0, long long a1, ...) │
+│▶ ✓ 0x4015c0 main       ││ {                                                 │
+│  ✓ 0x401670 _start     ││     unsigned long v25;  // rbp                    │
+│  · 0x401d30 sub_401d30 ││     ...                                           │
+└────────────────────────┘└───────────────────────────────────────────────────┘
+ ,/. switch function   j/k move line   q quit
+```
+
+| Key | Action |
+|-----|--------|
+| `,` / `.` | previous / next function |
+| `j` / `k` | move the highlighted line down / up |
+| `q`, `Esc` | quit (terminates any outstanding workers) |
+
+`--list` and `--slowest` are explicit reports that always print to stdout (no
+TUI). Force or disable the browser with `--tui always` / `--tui never`. When the
+TUI is active the stderr progress line is suppressed (the header shows progress).
 
 ### Progress
 

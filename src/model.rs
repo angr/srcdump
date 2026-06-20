@@ -37,6 +37,11 @@ pub enum WorkerMessage {
     /// How many functions this worker is about to process (its stripe size).
     /// The orchestrator sums these to learn the grand total.
     Plan { count: usize },
+    /// The full, address-sorted candidate function list (metadata only, no
+    /// text). Emitted once by worker 0 so the TUI can show every function with
+    /// a placeholder before any decompilation finishes. Ignored by the plain
+    /// dump path.
+    Catalog { functions: Vec<FunctionInfo> },
 }
 
 /// Metadata plus (optionally) decompiled text for one function.
