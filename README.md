@@ -43,18 +43,27 @@ stripes partition the work exactly, with no shared state or coordination. The
 orchestrator parses each worker's JSON-line output, merges it in address order,
 and prints it.
 
-### CFG cache
+### Caching
 
-The angrdb is keyed by the SHA-256 of the binary's contents:
+Both the CFG and the decompilation results are cached, keyed by the SHA-256 of
+the binary's contents:
 
 ```
-${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/db.adb
+${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/db.adb              # CFG (angrdb)
+${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/decomp/<angr-ver>/0x<addr>.json
 ```
 
-`--load-libs` recovers a different CFG, so it is cached separately as
-`db.load_libs.adb`. The build is atomic (written to a temp file then renamed),
-so concurrent or interrupted runs never leave a half-written db. Use `--rebuild`
-to force regeneration and `--cache-dir <DIR>` to relocate the cache.
+The CFG build is atomic (temp file + rename). Each function's decompilation is
+cached to its own file as it completes, so re-runs **skip the decompiler
+entirely** and just reload from disk — the slow step only happens once. The
+decomp cache is namespaced by angr version, so a toolchain upgrade invalidates
+it automatically. `--load-libs` recovers a different CFG, cached separately
+(`db.load_libs.adb`, `decomp.load_libs/`).
+
+- `--redecompile` — re-decompile everything, ignoring/overwriting the cache
+  (keeps the CFG).
+- `--rebuild` — rebuild the CFG **and** clear the decompilation cache.
+- `--cache-dir <DIR>` — relocate the cache.
 
 A function that fails to decompile is reported as a placeholder comment rather
 than aborting the whole dump.
@@ -80,8 +89,9 @@ Options:
   -j, --jobs <N>              Parallel workers (default: CPU count)
       --load-libs             Enable angr's auto_load_libs (off by default)
       --include-plt           Include PLT stubs in the output
-      --rebuild               Rebuild the cached CFG even if one exists
-      --cache-dir <DIR>       Override the CFG cache location
+      --rebuild               Rebuild the CFG and clear the decompilation cache
+      --redecompile           Re-decompile, ignoring the decompilation cache
+      --cache-dir <DIR>       Override the cache location
       --progress <WHEN>       Progress display: auto (default), always, never
       --tui <WHEN>            Interactive browser: auto (default), always, never
       --color <WHEN>          Syntax-highlight the dump: auto, always, never

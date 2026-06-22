@@ -45,7 +45,57 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--load-libs", action="store_true")
     ap.add_argument("--include-plt", action="store_true")
     ap.add_argument("--highlight", action="store_true")
+    ap.add_argument("--decomp-cache", default=None)
+    ap.add_argument("--force-decompile", action="store_true")
     return ap.parse_args(argv)
+
+
+def _decomp_cache_dir(base_dir):
+    """Per-angr-version subdir of the decompilation cache, created on demand.
+
+    Namespacing by angr version means a toolchain upgrade transparently
+    invalidates stale decompilations.
+    """
+    if not base_dir:
+        return None
+    try:
+        import importlib.metadata as _md
+        version = _md.version("angr")
+    except Exception:
+        version = "unknown"
+    path = os.path.join(base_dir, version)
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        return None
+
+
+def _cache_read(cache_dir, addr):
+    if not cache_dir:
+        return None
+    path = os.path.join(cache_dir, f"0x{addr:x}.json")
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_write(cache_dir, addr, payload):
+    if not cache_dir:
+        return
+    path = os.path.join(cache_dir, f"0x{addr:x}.json")
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 # angr AST node class -> srcdump highlight kind. Leaf, non-overlapping spans
@@ -272,6 +322,7 @@ def decompile_db(AngrDB, args) -> int:
     sections = build_section_index(proj)
     functions = candidate_functions(proj, args)
     stripe = functions[args.index :: args.count]
+    cache_dir = _decomp_cache_dir(args.decomp_cache)
 
     # Worker 0 publishes the full candidate list (metadata only) so the TUI can
     # render every function up front; other workers skip this. Ignored by the
@@ -304,6 +355,20 @@ def decompile_db(AngrDB, args) -> int:
         if args.mode == "list":
             emit({"kind": "function", "text": None, **base})
             continue
+
+        # Serve from the decompilation cache when possible.
+        if not args.force_decompile:
+            cached = _cache_read(cache_dir, func.addr)
+            if cached is not None and cached.get("text") is not None:
+                emit({
+                    "kind": "function",
+                    "text": cached["text"],
+                    "decompile_ms": cached.get("decompile_ms"),
+                    "spans": cached.get("spans", []) if args.highlight else [],
+                    **base,
+                })
+                continue
+
         try:
             t0 = time.perf_counter()
             dec = proj.analyses.Decompiler(func, cfg=cfg_model)
@@ -316,12 +381,19 @@ def decompile_db(AngrDB, args) -> int:
                     "message": "decompiler produced no output",
                 })
             else:
-                spans = highlight_spans(dec.codegen) if args.highlight else []
+                text = dec.codegen.text
+                # Always compute spans so the cache is highlight-independent.
+                spans = highlight_spans(dec.codegen)
+                _cache_write(
+                    cache_dir,
+                    func.addr,
+                    {"text": text, "spans": spans, "decompile_ms": decompile_ms},
+                )
                 emit({
                     "kind": "function",
-                    "text": dec.codegen.text,
+                    "text": text,
                     "decompile_ms": decompile_ms,
-                    "spans": spans,
+                    "spans": spans if args.highlight else [],
                     **base,
                 })
         except Exception as exc:

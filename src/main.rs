@@ -58,8 +58,17 @@ fn run() -> Result<()> {
 
     let python = env::resolve(&env_opts).context("resolving Python environment")?;
     let mode = if cli.list { Mode::List } else { Mode::Decompile };
-    let db_path =
-        cache_db_path(&file, cli.load_libs, cli.cache_dir.as_deref()).context("resolving CFG cache path")?;
+
+    // CFG db and decompilation cache live side by side under the binary's hash;
+    // `.load_libs` distinguishes the auto_load_libs variant.
+    let cache_base = cache_base(&file, cli.cache_dir.as_deref()).context("resolving cache path")?;
+    let suffix = if cli.load_libs { ".load_libs" } else { "" };
+    let db_path = cache_base.join(format!("db{suffix}.adb"));
+    let decomp_cache = cache_base.join(format!("decomp{suffix}"));
+    if cli.rebuild {
+        let _ = std::fs::remove_dir_all(&decomp_cache);
+    }
+    let force_decompile = cli.redecompile || cli.rebuild;
 
     // The interactive TUI replaces the plain dump only for whole-binary
     // decompilation; --list and --slowest are explicit reports that always go
@@ -91,6 +100,8 @@ fn run() -> Result<()> {
         db_path,
         rebuild: cli.rebuild,
         highlight,
+        decomp_cache,
+        force_decompile,
     };
 
     let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
@@ -126,19 +137,11 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Resolve the angrdb cache path for this binary:
-/// `<cache-root>/<sha256>/db[.load_libs].adb`.
-///
-/// `auto_load_libs` changes the recovered CFG, so it is encoded in the filename
-/// to keep the two variants from colliding.
-fn cache_db_path(file: &Path, load_libs: bool, cache_dir: Option<&Path>) -> Result<PathBuf> {
+/// Per-binary cache directory: `<cache-root>/<sha256>`. Holds the CFG angrdb and
+/// the decompilation cache (the `.load_libs` variant is encoded in their names).
+fn cache_base(file: &Path, cache_dir: Option<&Path>) -> Result<PathBuf> {
     let digest = sha256_file(file).with_context(|| format!("hashing {}", file.display()))?;
-    let filename = if load_libs {
-        "db.load_libs.adb"
-    } else {
-        "db.adb"
-    };
-    Ok(cache_root(cache_dir).join(digest).join(filename))
+    Ok(cache_root(cache_dir).join(digest))
 }
 
 /// Base directory for the cache: `--cache-dir`, else `$XDG_CACHE_HOME`, else

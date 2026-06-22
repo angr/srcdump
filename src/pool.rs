@@ -123,6 +123,13 @@ impl ProcessPoolBackend {
             if req.highlight {
                 cmd.arg("--highlight");
             }
+            // The decompilation cache only applies to the decompile workers.
+            if mode == Mode::Decompile {
+                cmd.arg("--decomp-cache").arg(&req.decomp_cache);
+                if req.force_decompile {
+                    cmd.arg("--force-decompile");
+                }
+            }
         }
         if req.load_libs {
             cmd.arg("--load-libs");

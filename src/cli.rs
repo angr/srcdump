@@ -63,9 +63,14 @@ pub struct Cli {
     #[arg(long = "include-plt")]
     pub include_plt: bool,
 
-    /// Rebuild the cached CFG even if a cached angrdb already exists.
+    /// Rebuild the cached CFG (and clear cached decompilation results).
     #[arg(long = "rebuild")]
     pub rebuild: bool,
+
+    /// Re-decompile every function, ignoring (and overwriting) the
+    /// decompilation cache. Keeps the cached CFG.
+    #[arg(long = "redecompile")]
+    pub redecompile: bool,
 
     /// Directory for the CFG cache (default: $XDG_CACHE_HOME/srcdump or
     /// ~/.cache/srcdump).

@@ -48,6 +48,10 @@ pub struct DecompileRequest {
     pub rebuild: bool,
     /// Ask workers to emit semantic highlight spans with each function.
     pub highlight: bool,
+    /// Directory holding cached per-function decompilation results.
+    pub decomp_cache: PathBuf,
+    /// Re-decompile and overwrite the cache instead of reading it.
+    pub force_decompile: bool,
 }
 
 /// Aggregated output of a job, already merged across all workers.
