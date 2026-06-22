@@ -44,7 +44,48 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--function", action="append", default=[])
     ap.add_argument("--load-libs", action="store_true")
     ap.add_argument("--include-plt", action="store_true")
+    ap.add_argument("--highlight", action="store_true")
     return ap.parse_args(argv)
+
+
+# angr AST node class -> srcdump highlight kind. Leaf, non-overlapping spans
+# from the codegen position map give us precise semantic tokens; keywords and
+# comments are filled in lexically on the Rust side.
+def _node_kind(class_name: str):
+    if class_name.startswith("SimType") or class_name in ("SimStruct", "SimUnion"):
+        return "type"
+    if class_name in ("CVariable", "CVariableField"):
+        return "var"
+    if class_name in ("CFunction", "CFunctionCall"):
+        return "call"
+    if class_name in ("CStructField", "CStructFieldNameDef"):
+        return "field"
+    if class_name == "CConstant":
+        return "const"
+    return None
+
+
+def highlight_spans(codegen) -> list:
+    """[[start, length, kind], …] semantic spans into codegen.text, sorted.
+
+    Best-effort: any failure yields no spans rather than breaking the dump.
+    """
+    try:
+        pm = getattr(codegen, "map_pos_to_node", None)
+        if pm is None:
+            return []
+        out = []
+        for start, elem in pm._posmap.items():
+            length = getattr(elem, "length", 0)
+            if length <= 0:
+                continue
+            kind = _node_kind(type(elem.obj).__name__)
+            if kind is not None:
+                out.append([int(start), int(length), kind])
+        out.sort()
+        return out
+    except Exception:
+        return []
 
 
 def matches_filters(func, filters: list[str]) -> bool:
@@ -275,10 +316,12 @@ def decompile_db(AngrDB, args) -> int:
                     "message": "decompiler produced no output",
                 })
             else:
+                spans = highlight_spans(dec.codegen) if args.highlight else []
                 emit({
                     "kind": "function",
                     "text": dec.codegen.text,
                     "decompile_ms": decompile_ms,
+                    "spans": spans,
                     **base,
                 })
         except Exception as exc:

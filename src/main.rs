@@ -7,6 +7,7 @@
 mod backend;
 mod cli;
 mod env;
+mod highlight;
 mod model;
 mod output;
 mod pool;
@@ -16,7 +17,7 @@ mod tui;
 use anyhow::{Context, Result};
 use backend::{DecompileBackend, DecompileRequest, Mode};
 use clap::Parser;
-use cli::{Cli, TuiMode};
+use cli::{Cli, ColorMode, TuiMode};
 use pool::ProcessPoolBackend;
 use progress::Progress;
 use sha2::{Digest, Sha256};
@@ -60,20 +61,6 @@ fn run() -> Result<()> {
     let db_path =
         cache_db_path(&file, cli.load_libs, cli.cache_dir.as_deref()).context("resolving CFG cache path")?;
 
-    let req = DecompileRequest {
-        binary: file.clone(),
-        functions: cli.functions.clone(),
-        load_libs: cli.load_libs,
-        include_plt: cli.include_plt,
-        jobs: cli.job_count(),
-        mode,
-        python,
-        db_path,
-        rebuild: cli.rebuild,
-    };
-
-    let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
-
     // The interactive TUI replaces the plain dump only for whole-binary
     // decompilation; --list and --slowest are explicit reports that always go
     // to stdout.
@@ -84,6 +71,30 @@ fn run() -> Result<()> {
             TuiMode::Never => false,
             TuiMode::Auto => io::stdout().is_terminal(),
         };
+    let dump_color = match cli.color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => io::stdout().is_terminal(),
+    };
+    // The TUI always highlights; the dump only when it will print colored code.
+    let will_dump_code = !want_tui && cli.slowest.is_none() && !cli.list;
+    let highlight = want_tui || (will_dump_code && dump_color);
+
+    let req = DecompileRequest {
+        binary: file.clone(),
+        functions: cli.functions.clone(),
+        load_libs: cli.load_libs,
+        include_plt: cli.include_plt,
+        jobs: cli.job_count(),
+        mode,
+        python,
+        db_path,
+        rebuild: cli.rebuild,
+        highlight,
+    };
+
+    let backend = ProcessPoolBackend::new().context("initializing worker pool")?;
+
     if want_tui {
         return tui::run(backend, req, file);
     }
@@ -107,7 +118,7 @@ fn run() -> Result<()> {
             Mode::List => output::print_listing(&mut out, &file, &result)?,
             // `mode` is only ever List or Decompile here; Build is internal to the pool.
             Mode::Decompile | Mode::Build => {
-                output::print_decompilation(&mut out, &file, &result)?
+                output::print_decompilation(&mut out, &file, &result, dump_color)?
             }
         }
     }

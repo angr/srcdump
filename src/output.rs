@@ -1,6 +1,7 @@
 //! Rendering of results to stdout, objdump-flavored.
 
 use crate::backend::DecompileResult;
+use crate::highlight::{self, ansi_code};
 use crate::model::FunctionInfo;
 use std::io::{self, Write};
 use std::path::Path;
@@ -18,8 +19,14 @@ fn print_header(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io:
     writeln!(out, "{}:     file format {}", file.display(), fmt)
 }
 
-/// Print decompiled functions grouped by section, in address order.
-pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileResult) -> io::Result<()> {
+/// Print decompiled functions grouped by section, in address order. When
+/// `color`, the code is syntax-highlighted with ANSI escapes.
+pub fn print_decompilation(
+    out: &mut impl Write,
+    file: &Path,
+    res: &DecompileResult,
+    color: bool,
+) -> io::Result<()> {
     print_header(out, file, res)?;
 
     // Functions arrive sorted by address and sections occupy disjoint address
@@ -45,7 +52,11 @@ pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileRes
             }
         )?;
         if let Some(text) = &func.text {
-            writeln!(out, "{}", text.trim_end())?;
+            if color {
+                write_highlighted(out, text, func)?;
+            } else {
+                writeln!(out, "{}", text.trim_end())?;
+            }
         }
     }
 
@@ -54,6 +65,20 @@ pub fn print_decompilation(out: &mut impl Write, file: &Path, res: &DecompileRes
         for err in &res.errors {
             writeln!(out, "// 0x{:x} <{}>: {}", err.addr, err.name, err.message)?;
         }
+    }
+    Ok(())
+}
+
+/// Write one function's code with ANSI syntax highlighting.
+fn write_highlighted(out: &mut impl Write, text: &str, func: &FunctionInfo) -> io::Result<()> {
+    for line in highlight::highlight_lines(text.trim_end(), &func.spans) {
+        for tok in line {
+            match ansi_code(tok.kind) {
+                Some(code) => write!(out, "\x1b[{code}m{}\x1b[0m", tok.text)?,
+                None => write!(out, "{}", tok.text)?,
+            }
+        }
+        writeln!(out)?;
     }
     Ok(())
 }

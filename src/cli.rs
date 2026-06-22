@@ -15,6 +15,17 @@ pub enum TuiMode {
     Never,
 }
 
+/// When to syntax-highlight the plain (non-TUI) dump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ColorMode {
+    /// Color when stdout is a terminal; plain otherwise.
+    Auto,
+    /// Always color.
+    Always,
+    /// Never color.
+    Never,
+}
+
 /// objdump-like tool that displays decompiled code instead of disassembly.
 ///
 /// By default `srcdump FILE` decompiles every recovered function in the
@@ -106,6 +117,11 @@ pub struct Cli {
     /// Ignored with --list or --slowest.
     #[arg(long = "tui", value_enum, default_value_t = TuiMode::Auto)]
     pub tui: TuiMode,
+
+    /// Syntax-highlight the plain dump (default: auto = on when stdout is a
+    /// terminal). The TUI is always highlighted.
+    #[arg(long = "color", value_enum, default_value_t = ColorMode::Auto)]
+    pub color: ColorMode,
 }
 
 impl Cli {

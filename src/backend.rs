@@ -46,6 +46,8 @@ pub struct DecompileRequest {
     pub db_path: PathBuf,
     /// Rebuild the cached angrdb even if it already exists.
     pub rebuild: bool,
+    /// Ask workers to emit semantic highlight spans with each function.
+    pub highlight: bool,
 }
 
 /// Aggregated output of a job, already merged across all workers.

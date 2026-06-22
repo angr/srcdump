@@ -67,7 +67,16 @@ pub struct FunctionInfo {
     /// `None` in list mode (or if the function failed).
     #[serde(default)]
     pub decompile_ms: Option<f64>,
+    /// Semantic highlight spans `[start, len, kind]` into `text`, from angr's
+    /// codegen position map. Empty unless highlighting was requested.
+    #[serde(default)]
+    pub spans: Vec<HlSpan>,
 }
+
+/// One semantic highlight span: `(start, length, kind)` over a function's text,
+/// deserialized from the worker's `[start, len, "kind"]` JSON arrays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HlSpan(pub usize, pub usize, pub String);
 
 /// A function that could not be decompiled.
 #[derive(Debug, Clone, Serialize, Deserialize)]

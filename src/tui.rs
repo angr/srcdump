@@ -13,6 +13,7 @@
 //! `f` toggles the function panel, `h` toggles help, `q`/`Esc` quits.
 
 use crate::backend::DecompileRequest;
+use crate::highlight::{self, Tok, TokKind};
 use crate::model::{FunctionInfo, WorkerMessage};
 use crate::pool::{Cancellation, ProcessPoolBackend};
 use anyhow::{Context, Result};
@@ -21,7 +22,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use ratatui::crossterm::{execute, terminal};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeMap;
@@ -31,6 +32,24 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// Background for the highlighted cursor line (a dark gray in the 256-color
+/// palette, so token foreground colors stay readable on top).
+const CURSOR_BG: Color = Color::Indexed(237);
+
+/// Foreground style for a highlight token kind.
+fn style_for(kind: TokKind) -> Style {
+    let st = Style::default();
+    match kind {
+        TokKind::Keyword => st.fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        TokKind::Type => st.fg(Color::Cyan),
+        TokKind::Call => st.fg(Color::LightBlue),
+        TokKind::Number => st.fg(Color::Yellow),
+        TokKind::Str => st.fg(Color::Green),
+        TokKind::Comment => st.fg(Color::DarkGray),
+        TokKind::Field | TokKind::Var | TokKind::Plain => st,
+    }
+}
 
 /// Decompilation state of one function.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,7 +61,8 @@ enum Status {
 
 struct Entry {
     info: FunctionInfo,
-    lines: Vec<String>,
+    /// Highlighted code, one token-run vector per line (empty until Done).
+    lines: Vec<Vec<Tok>>,
     error: Option<String>,
     status: Status,
 }
@@ -66,14 +86,6 @@ impl Entry {
             _ => 1,
         }
     }
-}
-
-/// Kind of a rendered document line, for styling.
-enum LineKind {
-    Header,
-    Code,
-    Banner,
-    Error,
 }
 
 struct App {
@@ -155,13 +167,7 @@ impl App {
             WorkerMessage::Function(f) => {
                 self.done_count += 1;
                 let addr = f.addr;
-                let lines = f
-                    .text
-                    .as_deref()
-                    .unwrap_or("")
-                    .lines()
-                    .map(str::to_string)
-                    .collect();
+                let lines = highlight::highlight_lines(f.text.as_deref().unwrap_or(""), &f.spans);
                 let known = self.entries.contains_key(&addr);
                 let entry = self
                     .entries
@@ -190,6 +196,7 @@ impl App {
                         section: None,
                         text: None,
                         decompile_ms: None,
+                        spans: Vec::new(),
                     })
                 });
                 entry.error = Some(err.message);
@@ -323,9 +330,12 @@ impl App {
         self.off = off.min(self.nav_len(i).saturating_sub(1));
     }
 
-    /// Text and kind for one document line of function `i` at block-offset `off`.
-    fn line_at(&self, i: usize, off: usize) -> (String, LineKind) {
+    /// Build the fully-styled document line for function `i` at block-offset
+    /// `off`. When `cursor`, every span gets a highlight background.
+    fn doc_line(&self, i: usize, off: usize, cursor: bool) -> Line<'static> {
         let entry = &self.entries[&self.order[i]];
+        let bg = |st: Style| if cursor { st.bg(CURSOR_BG) } else { st };
+
         if off == 0 {
             let mut h = format!("// 0x{:x} <{}>", entry.info.addr, entry.info.name);
             if let Some(sec) = &entry.info.section {
@@ -336,29 +346,35 @@ impl App {
                     h.push_str(&format!("  {ms:.0} ms"));
                 }
             }
-            return (h, LineKind::Header);
+            let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            return Line::from(Span::styled(h, bg(style)));
         }
+
         let body = off - 1;
         match entry.status {
-            // For `Done`, `get` returns `None` past the last code line, which
-            // renders the trailing blank separator as an empty `Code` line.
-            Status::Done => (
-                entry.lines.get(body).cloned().unwrap_or_default(),
-                LineKind::Code,
-            ),
-            // Pending/failed bodies are a single line; anything after it is the
-            // blank separator.
-            Status::Pending if body == 0 => {
-                ("    Decompiling…".to_string(), LineKind::Banner)
-            }
-            Status::Failed if body == 0 => (
+            // For `Done`, `get` returns `None` past the last code line — that's
+            // the trailing blank separator.
+            Status::Done => match entry.lines.get(body) {
+                Some(toks) if !toks.is_empty() => Line::from(
+                    toks.iter()
+                        .map(|t| Span::styled(t.text.clone(), bg(style_for(t.kind))))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => Line::from(Span::styled(String::new(), bg(Style::default()))),
+            },
+            // Pending/failed bodies are a single line; anything after is blank.
+            Status::Pending if body == 0 => Line::from(Span::styled(
+                "    Decompiling…".to_string(),
+                bg(Style::default().fg(Color::Yellow)),
+            )),
+            Status::Failed if body == 0 => Line::from(Span::styled(
                 format!(
                     "    ✗ {}",
                     entry.error.as_deref().unwrap_or("decompilation failed")
                 ),
-                LineKind::Error,
-            ),
-            _ => (String::new(), LineKind::Code),
+                bg(Style::default().fg(Color::Red)),
+            )),
+            _ => Line::from(Span::styled(String::new(), bg(Style::default()))),
         }
     }
 
@@ -578,21 +594,7 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::with_capacity(view_h);
     for abs in app.scroll..(app.scroll + view_h).min(app.total_lines) {
         let (i, off) = app.locate(abs);
-        let (text, kind) = app.line_at(i, off);
-        let base = match kind {
-            LineKind::Header => Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-            LineKind::Banner => Style::default().fg(Color::Yellow),
-            LineKind::Error => Style::default().fg(Color::Red),
-            LineKind::Code => Style::default(),
-        };
-        let style = if abs == cursor {
-            base.add_modifier(Modifier::REVERSED)
-        } else {
-            base
-        };
-        lines.push(Line::styled(text, style));
+        lines.push(app.doc_line(i, off, abs == cursor));
     }
 
     f.render_widget(Paragraph::new(lines).block(block), area);

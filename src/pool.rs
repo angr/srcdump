@@ -120,6 +120,9 @@ impl ProcessPoolBackend {
             for f in &req.functions {
                 cmd.arg("--function").arg(f);
             }
+            if req.highlight {
+                cmd.arg("--highlight");
+            }
         }
         if req.load_libs {
             cmd.arg("--load-libs");

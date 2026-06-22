@@ -59,6 +59,15 @@ to force regeneration and `--cache-dir <DIR>` to relocate the cache.
 A function that fails to decompile is reported as a placeholder comment rather
 than aborting the whole dump.
 
+### Syntax highlighting
+
+Decompiled code is syntax-highlighted with a hybrid scheme: angr's codegen
+provides exact *semantic* spans (types, variables, constants, calls, struct
+fields) and a small lexer fills in keywords, comments and strings. The TUI is
+always highlighted (the cursor line sits on a subtle background); the plain dump
+is ANSI-highlighted when stdout is a terminal — control with
+`--color auto|always|never` (e.g. `srcdump --color always prog | less -R`).
+
 ## Usage
 
 ```
@@ -75,6 +84,7 @@ Options:
       --cache-dir <DIR>       Override the CFG cache location
       --progress <WHEN>       Progress display: auto (default), always, never
       --tui <WHEN>            Interactive browser: auto (default), always, never
+      --color <WHEN>          Syntax-highlight the dump: auto, always, never
 
   Python environment:
       --venv <DIR>            Use an existing virtualenv with angr (skips uv)
