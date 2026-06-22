@@ -9,8 +9,8 @@
 //! result" banner until its decompilation arrives.
 //!
 //! Keys: `j`/`k` move the highlighted line (crossing function boundaries),
-//! `.`/`,` jump to the next/previous function, `f` toggles the function panel,
-//! `h` toggles help, `q`/`Esc` quits.
+//! `PgUp`/`PgDn` scroll by a page, `.`/`,` jump to the next/previous function,
+//! `f` toggles the function panel, `h` toggles help, `q`/`Esc` quits.
 
 use crate::backend::DecompileRequest;
 use crate::model::{FunctionInfo, WorkerMessage};
@@ -88,6 +88,8 @@ struct App {
     sel: usize,
     off: usize,
     scroll: usize,
+    /// Height of the doc viewport, updated each render (for Page Up/Down).
+    page: usize,
 
     show_sidebar: bool,
     show_help: bool,
@@ -115,6 +117,7 @@ impl App {
             sel: 0,
             off: 0,
             scroll: 0,
+            page: 0,
             show_sidebar: true,
             show_help: false,
             show_times: false,
@@ -294,6 +297,32 @@ impl App {
         }
     }
 
+    fn page_down(&mut self) {
+        if self.order.is_empty() {
+            return;
+        }
+        let step = self.page.max(1);
+        let target = (self.cursor_line() + step).min(self.total_lines.saturating_sub(1));
+        self.set_cursor_to_line(target);
+    }
+
+    fn page_up(&mut self) {
+        if self.order.is_empty() {
+            return;
+        }
+        let step = self.page.max(1);
+        let target = self.cursor_line().saturating_sub(step);
+        self.set_cursor_to_line(target);
+    }
+
+    /// Move the cursor to an absolute document line, snapping off any trailing
+    /// blank separator so the highlight lands on a real line.
+    fn set_cursor_to_line(&mut self, abs: usize) {
+        let (i, off) = self.locate(abs);
+        self.sel = i;
+        self.off = off.min(self.nav_len(i).saturating_sub(1));
+    }
+
     /// Text and kind for one document line of function `i` at block-offset `off`.
     fn line_at(&self, i: usize, off: usize) -> (String, LineKind) {
         let entry = &self.entries[&self.order[i]];
@@ -427,6 +456,8 @@ fn event_loop(
                     (KeyCode::Char(','), _) => app.prev_func(),
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => app.move_down(),
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => app.move_up(),
+                    (KeyCode::PageDown, _) => app.page_down(),
+                    (KeyCode::PageUp, _) => app.page_up(),
                     _ => {}
                 }
             }
@@ -459,7 +490,7 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 
     f.render_widget(
-        Paragraph::new(" j/k line   ./, function   f panel   t times   h help   q quit")
+        Paragraph::new(" j/k line   PgUp/PgDn page   ./, function   f panel   t times   h help   q quit")
             .style(Style::default().fg(Color::DarkGray)),
         footer,
     );
@@ -531,6 +562,7 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let view_h = area.height.saturating_sub(2) as usize;
+    app.page = view_h;
     let cursor = app.cursor_line();
 
     // Keep the cursor within the viewport.
@@ -568,7 +600,7 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help(f: &mut Frame) {
     let area = centered_rect(60, 11, f.area());
-    let text = "\n  j / k        move the highlighted line (crosses functions)\n  . / ,        jump to next / previous function\n  f            toggle the function panel\n  t            toggle decompilation times\n  h            toggle this help\n  q / Esc      quit";
+    let text = "\n  j / k         move the highlighted line (crosses functions)\n  PgUp / PgDn   scroll by a page\n  . / ,         jump to next / previous function\n  f             toggle the function panel\n  t             toggle decompilation times\n  h             toggle this help\n  q / Esc       quit";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(
