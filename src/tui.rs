@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Background for the highlighted cursor line (a dark gray in the 256-color
 /// palette, so token foreground colors stay readable on top).
@@ -117,6 +117,10 @@ struct App {
     starts: Vec<usize>,
     total_lines: usize,
     dirty: bool,
+
+    // Available-memory sample for the status bar, refreshed every 0.5s.
+    mem_avail: Option<u64>,
+    mem_checked: Option<Instant>,
 }
 
 impl App {
@@ -141,7 +145,41 @@ impl App {
             starts: Vec::new(),
             total_lines: 0,
             dirty: true,
+            mem_avail: None,
+            mem_checked: None,
         }
+    }
+
+    /// Re-sample available memory at most every 0.5 seconds.
+    fn refresh_mem(&mut self, now: Instant) {
+        let stale = self
+            .mem_checked
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(500));
+        if stale {
+            self.mem_avail = read_mem_available();
+            self.mem_checked = Some(now);
+        }
+    }
+
+    /// Cursor position as percentages: within the current function, and across
+    /// the whole document.
+    fn cursor_percents(&self) -> (u32, u32) {
+        if self.order.is_empty() {
+            return (0, 0);
+        }
+        let nl = self.nav_len(self.sel);
+        let off = self.off.min(nl.saturating_sub(1));
+        let func = if nl <= 1 {
+            100
+        } else {
+            (off as u64 * 100 / (nl as u64 - 1)) as u32
+        };
+        let overall = if self.total_lines <= 1 {
+            100
+        } else {
+            (self.cursor_line() as u64 * 100 / (self.total_lines as u64 - 1)) as u32
+        };
+        (func, overall)
     }
 
     fn apply(&mut self, msg: WorkerMessage) {
@@ -454,6 +492,7 @@ fn event_loop(
         }
 
         app.ensure_layout();
+        app.refresh_mem(Instant::now());
         terminal.draw(|f| render(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -488,9 +527,10 @@ fn render(f: &mut Frame, app: &mut App) {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(f.area());
-    let (header, body, footer) = (rows[0], rows[1], rows[2]);
+    let (header, body, status, footer) = (rows[0], rows[1], rows[2], rows[3]);
 
     render_header(f, app, header);
 
@@ -505,6 +545,8 @@ fn render(f: &mut Frame, app: &mut App) {
         render_doc(f, app, body);
     }
 
+    render_status(f, app, status);
+
     f.render_widget(
         Paragraph::new(" j/k line   PgUp/PgDn page   ./, function   f panel   t times   h help   q quit")
             .style(Style::default().fg(Color::DarkGray)),
@@ -514,6 +556,26 @@ fn render(f: &mut Frame, app: &mut App) {
     if app.show_help {
         render_help(f);
     }
+}
+
+/// Bottom status bar: available memory plus cursor position percentages.
+fn render_status(f: &mut Frame, app: &App, area: Rect) {
+    let mem = match app.mem_avail {
+        Some(b) => format!("{} free", human_bytes(b)),
+        None => "n/a".to_string(),
+    };
+    let (func_pct, overall_pct) = app.cursor_percents();
+    let left = format!(" mem {mem}");
+    let right = format!("{func_pct}% func / {overall_pct}% overall ");
+
+    let width = area.width as usize;
+    let pad = width.saturating_sub(left.chars().count() + right.chars().count());
+    let line = format!("{left}{}{right}", " ".repeat(pad));
+
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(Color::Indexed(236)).fg(Color::Gray)),
+        area,
+    );
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
@@ -622,4 +684,27 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
+}
+
+/// Available system memory in bytes, from `/proc/meminfo` (Linux). `None`
+/// elsewhere or on parse failure.
+fn read_mem_available() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb * 1024);
+        }
+    }
+    None
+}
+
+/// Format a byte count as `GiB`/`MiB`.
+fn human_bytes(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gib >= 1.0 {
+        format!("{gib:.1} GiB")
+    } else {
+        format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }

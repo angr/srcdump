@@ -113,8 +113,13 @@ streams in:
 │▶ · 0x401d30 sub_401d30 ││ // 0x401d30 <sub_401d30>  .text                   │
 │  · 0x401e90 sub_401e90 ││     ⏳ waiting for result…                        │
 └────────────────────────┘└───────────────────────────────────────────────────┘
+ mem 12.3 GiB free                              45% func / 12% overall
  j/k line   ./, function   f panel   t times   h help   q quit
 ```
+
+A status bar shows available system memory (refreshed every 0.5 s) and the
+cursor's position as a percentage of the current function and of the whole
+document.
 
 | Key | Action |
 |-----|--------|
