@@ -82,7 +82,7 @@ Options:
       --env-archive <FILE>    Provision the env from a prebuilt zip
       --refresh-env           Recreate / upgrade the managed angr env
       --remove-env            Remove the managed env and exit
-      --python-version <X.Y>  Python version for the managed env (default 3.12)
+      --python-version <X.Y>  Python version for the managed env (default 3.14)
       --python <PATH>         Low-level: exact interpreter (skips management)
 ```
 
@@ -184,7 +184,7 @@ For distribution without network access, build a `uv_angr.zip` once and ship it
 beside the binary:
 
 ```sh
-uv venv --relocatable --python 3.12 env
+uv venv --relocatable --python 3.14 env
 uv pip install --python env/bin/python angr sqlalchemy
 # zip the venv so its contents are at the archive root (bin/, lib/, …)
 ( cd env && zip -y -r ../uv_angr.zip . )   # -y preserves symlinks

@@ -90,7 +90,7 @@ pub struct Cli {
     pub yes: bool,
 
     /// Python version for the uv-managed env.
-    #[arg(long = "python-version", value_name = "X.Y", default_value = "3.12")]
+    #[arg(long = "python-version", value_name = "X.Y", default_value = "3.14")]
     pub python_version: String,
 
     /// Low-level override: exact Python interpreter to run workers with
