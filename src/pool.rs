@@ -145,7 +145,7 @@ impl ProcessPoolBackend {
         let mut child = self
             .build_command(req, mode, index)
             .spawn()
-            .with_context(|| format!("spawning worker via `{}`", req.python))?;
+            .with_context(|| format!("spawning worker via `{}`", req.python.display()))?;
         cancel.register(child.id());
 
         let stdout = child.stdout.take().expect("piped stdout");

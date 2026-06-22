@@ -6,6 +6,7 @@
 
 mod backend;
 mod cli;
+mod env;
 mod model;
 mod output;
 mod pool;
@@ -21,7 +22,7 @@ use progress::Progress;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     if let Err(err) = run() {
@@ -33,16 +34,34 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    if !cli.file.exists() {
-        anyhow::bail!("no such file: {}", cli.file.display());
+    let env_opts = env::EnvOptions {
+        python: cli.python.clone(),
+        venv: cli.venv.clone(),
+        env_dir: cli.env_dir.clone(),
+        env_archive: cli.env_archive.clone(),
+        python_version: cli.python_version.clone(),
+        refresh: cli.refresh_env,
+        assume_yes: cli.yes,
+    };
+
+    // Standalone action: remove the managed env and exit (no file needed).
+    if cli.remove_env {
+        return env::remove(&env_opts);
     }
 
-    let python = resolve_python(cli.python.as_deref());
+    // clap guarantees `file` is present unless --remove-env was given.
+    let file = cli.file.clone().expect("file required unless --remove-env");
+    if !file.exists() {
+        anyhow::bail!("no such file: {}", file.display());
+    }
+
+    let python = env::resolve(&env_opts).context("resolving Python environment")?;
     let mode = if cli.list { Mode::List } else { Mode::Decompile };
-    let db_path = cache_db_path(&cli).context("resolving CFG cache path")?;
+    let db_path =
+        cache_db_path(&file, cli.load_libs, cli.cache_dir.as_deref()).context("resolving CFG cache path")?;
 
     let req = DecompileRequest {
-        binary: cli.file.clone(),
+        binary: file.clone(),
         functions: cli.functions.clone(),
         load_libs: cli.load_libs,
         include_plt: cli.include_plt,
@@ -66,7 +85,7 @@ fn run() -> Result<()> {
             TuiMode::Auto => io::stdout().is_terminal(),
         };
     if want_tui {
-        return tui::run(backend, req, cli.file.clone());
+        return tui::run(backend, req, file);
     }
 
     let mut progress = Progress::new(cli.progress, cli.list);
@@ -82,13 +101,13 @@ fn run() -> Result<()> {
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
     if let Some(n) = cli.slowest {
-        output::print_slowest(&mut out, &cli.file, &result, n)?;
+        output::print_slowest(&mut out, &file, &result, n)?;
     } else {
         match mode {
-            Mode::List => output::print_listing(&mut out, &cli.file, &result)?,
+            Mode::List => output::print_listing(&mut out, &file, &result)?,
             // `mode` is only ever List or Decompile here; Build is internal to the pool.
             Mode::Decompile | Mode::Build => {
-                output::print_decompilation(&mut out, &cli.file, &result)?
+                output::print_decompilation(&mut out, &file, &result)?
             }
         }
     }
@@ -101,22 +120,21 @@ fn run() -> Result<()> {
 ///
 /// `auto_load_libs` changes the recovered CFG, so it is encoded in the filename
 /// to keep the two variants from colliding.
-fn cache_db_path(cli: &Cli) -> Result<PathBuf> {
-    let digest = sha256_file(&cli.file)
-        .with_context(|| format!("hashing {}", cli.file.display()))?;
-    let filename = if cli.load_libs {
+fn cache_db_path(file: &Path, load_libs: bool, cache_dir: Option<&Path>) -> Result<PathBuf> {
+    let digest = sha256_file(file).with_context(|| format!("hashing {}", file.display()))?;
+    let filename = if load_libs {
         "db.load_libs.adb"
     } else {
         "db.adb"
     };
-    Ok(cache_root(cli).join(digest).join(filename))
+    Ok(cache_root(cache_dir).join(digest).join(filename))
 }
 
 /// Base directory for the cache: `--cache-dir`, else `$XDG_CACHE_HOME`, else
 /// `$HOME/.cache`, else the system temp dir — each with a `srcdump` suffix.
-fn cache_root(cli: &Cli) -> PathBuf {
-    if let Some(dir) = &cli.cache_dir {
-        return dir.clone();
+fn cache_root(cache_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = cache_dir {
+        return dir.to_path_buf();
     }
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(xdg).join("srcdump");
@@ -146,25 +164,4 @@ fn sha256_file(path: &std::path::Path) -> io::Result<String> {
         let _ = write!(hex, "{byte:02x}");
     }
     Ok(hex)
-}
-
-/// Resolve the Python interpreter used to run workers.
-///
-/// Precedence: `--python` flag, then `$SRCDUMP_PYTHON`, then an active
-/// virtualenv (`$VIRTUAL_ENV/bin/python`), then plain `python3` on PATH.
-fn resolve_python(flag: Option<&str>) -> String {
-    if let Some(p) = flag {
-        return p.to_string();
-    }
-    if let Ok(p) = std::env::var("SRCDUMP_PYTHON") {
-        if !p.is_empty() {
-            return p;
-        }
-    }
-    if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
-        if !venv.is_empty() {
-            return format!("{venv}/bin/python");
-        }
-    }
-    "python3".to_string()
 }

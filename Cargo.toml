@@ -19,6 +19,10 @@ num_cpus = "1"
 sha2 = "0.10"
 ratatui = "0.29"
 libc = "0.2"
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

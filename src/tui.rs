@@ -320,7 +320,7 @@ impl App {
             // Pending/failed bodies are a single line; anything after it is the
             // blank separator.
             Status::Pending if body == 0 => {
-                ("    ⏳ waiting for result…".to_string(), LineKind::Banner)
+                ("    Decompiling…".to_string(), LineKind::Banner)
             }
             Status::Failed if body == 0 => (
                 format!(

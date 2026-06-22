@@ -41,7 +41,7 @@ pub struct DecompileRequest {
     pub jobs: usize,
     pub mode: Mode,
     /// Python interpreter to launch workers with.
-    pub python: String,
+    pub python: PathBuf,
     /// Where the cached CFG angrdb lives.
     pub db_path: PathBuf,
     /// Rebuild the cached angrdb even if it already exists.

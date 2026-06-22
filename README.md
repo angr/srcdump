@@ -73,9 +73,17 @@ Options:
       --include-plt           Include PLT stubs in the output
       --rebuild               Rebuild the cached CFG even if one exists
       --cache-dir <DIR>       Override the CFG cache location
-      --python <PATH>         Interpreter to run workers with
       --progress <WHEN>       Progress display: auto (default), always, never
       --tui <WHEN>            Interactive browser: auto (default), always, never
+
+  Python environment:
+      --venv <DIR>            Use an existing virtualenv with angr (skips uv)
+      --env-dir <DIR>         Location of the managed env
+      --env-archive <FILE>    Provision the env from a prebuilt zip
+      --refresh-env           Recreate / upgrade the managed angr env
+      --remove-env            Remove the managed env and exit
+      --python-version <X.Y>  Python version for the managed env (default 3.12)
+      --python <PATH>         Low-level: exact interpreter (skips management)
 ```
 
 ### Interactive TUI
@@ -143,14 +151,55 @@ RANK     TIME(ms)  ADDRESS             SECTION   NAME
    ...
 ```
 
-### Choosing the interpreter
+## The Python environment
 
-Workers need a Python with angr installed. Resolution order:
+Workers need a Python with angr. By default srcdump **provisions one itself** —
+nothing needs to be pre-installed. Resolution order:
 
-1. `--python <PATH>`
-2. `$SRCDUMP_PYTHON`
-3. `$VIRTUAL_ENV/bin/python` (i.e. an activated virtualenv)
-4. `python3` on `PATH`
+1. `--python <PATH>` or `$SRCDUMP_PYTHON` — an exact interpreter, used as-is.
+2. `--venv <DIR>` — an existing virtualenv with angr (`<DIR>/bin/python`), used
+   as-is. No uv, no network.
+3. *(default)* a **srcdump-managed environment** at
+   `${XDG_DATA_HOME:-~/.local/share}/srcdump/env` (override with `--env-dir` /
+   `$SRCDUMP_ENV_DIR`), provisioned one of two ways:
+   - **Bundled archive** — if a `uv_angr.zip` sits next to the `srcdump` binary
+     (or `--env-archive <FILE>` is given), it is extracted into the managed
+     location. No uv, no network — ideal for offline / air-gapped use.
+   - **uv** — otherwise, [uv](https://github.com/astral-sh/uv) creates the venv
+     and installs the latest angr from PyPI, **downloading uv itself first** if
+     it isn't already on `PATH`.
+
+On first run (when uv or the env is missing) srcdump describes what it will
+download/install and where, plus how to undo it, then **asks permission**
+(`[Y/n]`) before doing anything. Decline and it exits without touching anything.
+Pass `-y`/`--yes` to confirm non-interactively (required when stdin isn't a
+terminal, e.g. in CI). The env is created once and reused (a readiness marker
+keys it to its source); `--refresh-env` rebuilds/upgrades it, and `srcdump
+--remove-env` deletes it (after a `[y/N]` confirmation — also skippable with
+`--yes`; pass the same `--env-dir` if you used a custom one).
+
+### Shipping angr in one file
+
+For distribution without network access, build a `uv_angr.zip` once and ship it
+beside the binary:
+
+```sh
+uv venv --relocatable --python 3.12 env
+uv pip install --python env/bin/python angr sqlalchemy
+# zip the venv so its contents are at the archive root (bin/, lib/, …)
+( cd env && zip -y -r ../uv_angr.zip . )   # -y preserves symlinks
+```
+
+srcdump auto-detects `uv_angr.zip` next to itself and extracts it on first run.
+The archive must be **self-contained** for use on another machine — bundle the
+base interpreter (e.g. a `python-build-standalone` build) rather than relying on
+symlinks into a uv-managed Python that won't exist on the target.
+
+> Why not a single frozen executable? angr's native extensions (`pyvex`,
+> `unicorn`, `z3`, …) can't be imported from inside a zip, and PyInstaller-style
+> onefile binaries re-extract on every process start — bad for srcdump's
+> one-process-per-CPU model. A cached venv (uv or archive) is faster and far more
+> robust.
 
 ## Building
 
@@ -158,9 +207,10 @@ Workers need a Python with angr installed. Resolution order:
 cargo build --release
 ```
 
-The Python worker (`src/worker.py`) is embedded into the binary at compile time,
-so the resulting executable is self-contained apart from needing an angr-capable
-interpreter at runtime.
+The Python worker (`src/worker.py`) is embedded into the binary at compile time.
+At runtime srcdump provisions its own angr environment (see [The Python
+environment](#the-python-environment)), so the only hard requirement is the
+`srcdump` binary itself.
 
 ## Performance notes & roadmap
 
@@ -177,5 +227,6 @@ Current tradeoffs and planned work:
 
 ## Runtime dependencies
 
-The worker interpreter needs angr **and SQLAlchemy** (the latter backs angrdb).
-Install with `pip install sqlalchemy` if it's missing.
+None to pre-install in the default flow — srcdump provisions angr (plus
+SQLAlchemy, which backs angrdb) into its managed env. If you point srcdump at
+your own env with `--venv`/`--python`, that interpreter must have both.
