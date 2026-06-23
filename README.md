@@ -52,7 +52,8 @@ Options:
   -f, --function <NAME|ADDR>  Only decompile these functions (repeatable)
   -l, --list                  List functions instead of decompiling
       --slowest <N>           Report the N slowest functions by decompile time
-  -j, --jobs <N>              Parallel workers (default: CPU count)
+  -j, --jobs <N>              Parallel workers (default: CPU count, capped so
+                              each worker has ~4 GiB of available RAM)
       --load-libs             Enable angr's auto_load_libs (off by default)
       --include-plt           Include PLT stubs in the output
       --rebuild               Rebuild the CFG and clear the decompilation cache

@@ -12,6 +12,7 @@ mod model;
 mod output;
 mod pool;
 mod progress;
+mod sysmem;
 mod tui;
 
 use anyhow::{Context, Result};
@@ -109,12 +110,25 @@ fn run() -> Result<()> {
         }
     }
 
+    // Each angr worker can use a lot of RAM, so cap the worker count to what
+    // available memory can support (~4 GiB each).
+    let jobs = budget_workers(cli.job_count(), sysmem::available_bytes());
+    if jobs < cli.job_count() {
+        eprintln!(
+            "srcdump: limiting to {jobs} worker(s) — {} available, budgeting {} each",
+            sysmem::available_bytes()
+                .map(sysmem::human_bytes)
+                .unwrap_or_else(|| "?".into()),
+            sysmem::human_bytes(RAM_PER_WORKER),
+        );
+    }
+
     let req = DecompileRequest {
         binary: file.clone(),
         functions: cli.functions.clone(),
         load_libs: cli.load_libs,
         include_plt: cli.include_plt,
-        jobs: cli.job_count(),
+        jobs,
         mode,
         python,
         db_path,
@@ -246,6 +260,23 @@ fn parse_int(s: &str) -> Option<u64> {
     }
 }
 
+/// RAM budgeted per angr worker.
+const RAM_PER_WORKER: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Cap the worker count so each worker has roughly [`RAM_PER_WORKER`] of
+/// headroom. `available` is available RAM in bytes, or `None` when it can't be
+/// determined (then `requested` is left unchanged). Always allows at least one
+/// worker.
+fn budget_workers(requested: usize, available: Option<u64>) -> usize {
+    match available {
+        Some(bytes) => {
+            let by_ram = (bytes / RAM_PER_WORKER).max(1) as usize;
+            requested.min(by_ram)
+        }
+        None => requested,
+    }
+}
+
 /// Per-binary cache directory: `<cache-root>/<sha256>`. Holds the CFG angrdb and
 /// the decompilation cache (the `.load_libs` variant is encoded in their names).
 fn cache_base(file: &Path, cache_dir: Option<&Path>) -> Result<PathBuf> {
@@ -358,5 +389,19 @@ mod tests {
         assert!(res.is_none());
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn worker_budget_caps_by_available_ram() {
+        let gib = 1024 * 1024 * 1024;
+        // 64 GiB / 4 GiB = 16 -> capped from 32.
+        assert_eq!(budget_workers(32, Some(64 * gib)), 16);
+        // Requested below the RAM budget is left alone.
+        assert_eq!(budget_workers(8, Some(64 * gib)), 8);
+        // Under 4 GiB still allows one worker.
+        assert_eq!(budget_workers(32, Some(2 * gib)), 1);
+        assert_eq!(budget_workers(32, Some(0)), 1);
+        // Unknown available memory -> no cap.
+        assert_eq!(budget_workers(32, None), 32);
     }
 }

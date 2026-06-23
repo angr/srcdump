@@ -174,7 +174,7 @@ impl App {
             .mem_checked
             .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(500));
         if stale {
-            self.mem_avail = read_mem_available();
+            self.mem_avail = crate::sysmem::available_bytes();
             self.mem_checked = Some(now);
         }
     }
@@ -856,7 +856,7 @@ fn render_goto(f: &mut Frame, query: &str, failed: bool) {
 /// Bottom status bar: available memory plus cursor position percentages.
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let mem = match app.mem_avail {
-        Some(b) => format!("{} free", human_bytes(b)),
+        Some(b) => format!("{} free", crate::sysmem::human_bytes(b)),
         None => "n/a".to_string(),
     };
     let (func_pct, overall_pct) = app.cursor_percents();
@@ -1039,29 +1039,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
-}
-
-/// Available system memory in bytes, from `/proc/meminfo` (Linux). `None`
-/// elsewhere or on parse failure.
-fn read_mem_available() -> Option<u64> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    for line in meminfo.lines() {
-        if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-            return Some(kb * 1024);
-        }
-    }
-    None
-}
-
-/// Format a byte count as `GiB`/`MiB`.
-fn human_bytes(bytes: u64) -> String {
-    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    if gib >= 1.0 {
-        format!("{gib:.1} GiB")
-    } else {
-        format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
-    }
 }
 
 #[cfg(test)]
