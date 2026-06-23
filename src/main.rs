@@ -288,3 +288,75 @@ fn sha256_file(path: &std::path::Path) -> io::Result<String> {
     }
     Ok(hex)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// A unique scratch dir for one test.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("srcdump_test_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("decomp")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn warm_path_flags_only_stale_functions() {
+        let dir = scratch("stale");
+        let decomp = dir.join("decomp");
+        fs::write(
+            dir.join("catalog.json"),
+            r#"{"angr_version":"9.2.221","file_format":"elf64-x86-64",
+                "functions":[{"addr":4096,"name":"main"},{"addr":8192,"name":"foo"}]}"#,
+        )
+        .unwrap();
+        // main matches the catalog version; foo was produced by an older angr.
+        fs::write(
+            decomp.join("0x1000.json"),
+            r#"{"text":"int main(){}","angr_version":"9.2.221"}"#,
+        )
+        .unwrap();
+        fs::write(
+            decomp.join("0x2000.json"),
+            r#"{"text":"int foo(){}","angr_version":"9.0.0"}"#,
+        )
+        .unwrap();
+
+        let res = try_cached(&dir.join("catalog.json"), &decomp, &[], Mode::Decompile)
+            .unwrap()
+            .expect("all functions cached -> warm hit");
+
+        assert_eq!(res.angr_version.as_deref(), Some("9.2.221"));
+        let main = res.functions.iter().find(|f| f.addr == 0x1000).unwrap();
+        let foo = res.functions.iter().find(|f| f.addr == 0x2000).unwrap();
+        assert_eq!(
+            main.stale_version, None,
+            "current-version function not flagged"
+        );
+        assert_eq!(
+            foo.stale_version.as_deref(),
+            Some("9.0.0"),
+            "older-version function flagged"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn warm_path_bails_when_a_decompilation_is_missing() {
+        let dir = scratch("miss");
+        let decomp = dir.join("decomp");
+        fs::write(
+            dir.join("catalog.json"),
+            r#"{"angr_version":"9.2.221","functions":[{"addr":4096,"name":"main"}]}"#,
+        )
+        .unwrap();
+        // No decomp/0x1000.json -> can't serve from cache, must fall back to workers.
+        let res = try_cached(&dir.join("catalog.json"), &decomp, &[], Mode::Decompile).unwrap();
+        assert!(res.is_none());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+}

@@ -125,3 +125,31 @@ pub struct FunctionError {
     /// Short description of the failure.
     pub message: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_comment_with_and_without_current() {
+        assert_eq!(
+            stale_comment("9.0.0", Some("9.2.221")),
+            "// cached: decompiled with angr 9.0.0 (current: 9.2.221)"
+        );
+        assert_eq!(
+            stale_comment("9.0.0", None),
+            "// cached: decompiled with angr 9.0.0"
+        );
+    }
+
+    #[test]
+    fn decomp_cache_reads_angr_version_and_defaults() {
+        let d: DecompCache =
+            serde_json::from_str(r#"{"text":"x","angr_version":"9.1.0"}"#).unwrap();
+        assert_eq!(d.angr_version.as_deref(), Some("9.1.0"));
+        assert!(d.spans.is_empty());
+        // Older cache files without the field deserialize to None.
+        let d2: DecompCache = serde_json::from_str(r#"{"text":"y"}"#).unwrap();
+        assert_eq!(d2.angr_version, None);
+    }
+}
