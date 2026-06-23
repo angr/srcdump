@@ -51,6 +51,13 @@ pub fn print_decompilation(
                 String::new()
             }
         )?;
+        if let Some(cached) = &func.stale_version {
+            let note = crate::model::stale_comment(cached, res.angr_version.as_deref());
+            match (color, ansi_code(highlight::TokKind::Comment)) {
+                (true, Some(code)) => writeln!(out, "\x1b[{code}m{note}\x1b[0m")?,
+                _ => writeln!(out, "{note}")?,
+            }
+        }
         if let Some(text) = &func.text {
             if color {
                 write_highlighted(out, text, func)?;
@@ -61,7 +68,11 @@ pub fn print_decompilation(
     }
 
     if !res.errors.is_empty() {
-        writeln!(out, "\n// --- {} function(s) failed to decompile ---", res.errors.len())?;
+        writeln!(
+            out,
+            "\n// --- {} function(s) failed to decompile ---",
+            res.errors.len()
+        )?;
         for err in &res.errors {
             writeln!(out, "// 0x{:x} <{}>: {}", err.addr, err.name, err.message)?;
         }

@@ -266,7 +266,10 @@ impl ProcessPoolBackend {
 
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("worker thread panicked"))))
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(anyhow!("worker thread panicked")))
+                })
                 .collect()
         });
 
@@ -304,9 +307,15 @@ impl DecompileBackend for ProcessPoolBackend {
             }
             match msg {
                 WorkerMessage::Progress { stage, percent } => progress.build_stage(&stage, percent),
-                WorkerMessage::Meta { file_format } => {
+                WorkerMessage::Meta {
+                    file_format,
+                    angr_version,
+                } => {
                     if result.file_format.is_none() {
                         result.file_format = Some(file_format);
+                    }
+                    if result.angr_version.is_none() {
+                        result.angr_version = angr_version;
                     }
                 }
                 WorkerMessage::Catalog { .. } => {}

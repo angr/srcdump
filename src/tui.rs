@@ -89,6 +89,7 @@ impl Entry {
 }
 
 struct App {
+    angr_version: Option<String>,
     file: PathBuf,
     file_format: Option<String>,
     entries: BTreeMap<u64, Entry>,
@@ -127,6 +128,7 @@ impl App {
     fn new(file: PathBuf) -> Self {
         Self {
             file,
+            angr_version: None,
             file_format: None,
             entries: BTreeMap::new(),
             order: Vec::new(),
@@ -161,6 +163,13 @@ impl App {
         }
     }
 
+    /// Comment to prepend when a function came from a stale-version cache.
+    fn stale_note(&self, f: &FunctionInfo) -> Option<String> {
+        f.stale_version
+            .as_ref()
+            .map(|v| crate::model::stale_comment(v, self.angr_version.as_deref()))
+    }
+
     /// Cursor position as percentages: within the current function, and across
     /// the whole document.
     fn cursor_percents(&self) -> (u32, u32) {
@@ -192,12 +201,20 @@ impl App {
                     _ => std::mem::take(&mut self.build_status),
                 };
             }
-            WorkerMessage::Meta { file_format } => {
+            WorkerMessage::Meta {
+                file_format,
+                angr_version,
+            } => {
                 self.file_format.get_or_insert(file_format);
+                if let Some(v) = angr_version {
+                    self.angr_version.get_or_insert(v);
+                }
             }
             WorkerMessage::Catalog { functions } => {
                 for f in functions {
-                    self.entries.entry(f.addr).or_insert_with(|| Entry::pending(f));
+                    self.entries
+                        .entry(f.addr)
+                        .or_insert_with(|| Entry::pending(f));
                 }
                 self.rebuild_order();
             }
@@ -205,7 +222,18 @@ impl App {
             WorkerMessage::Function(f) => {
                 self.done_count += 1;
                 let addr = f.addr;
-                let lines = highlight::highlight_lines(f.text.as_deref().unwrap_or(""), &f.spans);
+                let mut lines =
+                    highlight::highlight_lines(f.text.as_deref().unwrap_or(""), &f.spans);
+                // Prepend a comment when this was served from a stale cache.
+                if let Some(note) = self.stale_note(&f) {
+                    lines.insert(
+                        0,
+                        vec![Tok {
+                            text: note,
+                            kind: TokKind::Comment,
+                        }],
+                    );
+                }
                 let known = self.entries.contains_key(&addr);
                 let entry = self
                     .entries
@@ -235,6 +263,7 @@ impl App {
                         text: None,
                         decompile_ms: None,
                         spans: Vec::new(),
+                        stale_version: None,
                     })
                 });
                 entry.error = Some(err.message);
@@ -389,7 +418,9 @@ impl App {
             }
             spans.push(Span::styled(
                 h,
-                bg(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                bg(Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)),
             ));
         } else {
             let body = off - 1;
@@ -481,7 +512,10 @@ pub fn run_cached(result: crate::backend::DecompileResult, file: PathBuf) -> Res
 
     let mut app = App::new(file);
     if let Some(fmt) = result.file_format {
-        app.apply(WorkerMessage::Meta { file_format: fmt });
+        app.apply(WorkerMessage::Meta {
+            file_format: fmt,
+            angr_version: result.angr_version,
+        });
     }
     let total = result.functions.len();
     for func in result.functions {
@@ -587,8 +621,10 @@ fn render(f: &mut Frame, app: &mut App) {
     render_status(f, app, status);
 
     f.render_widget(
-        Paragraph::new(" j/k line   PgUp/PgDn page   ./, function   f panel   t times   h help   q quit")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(
+            " j/k line   PgUp/PgDn page   ./, function   f panel   t times   h help   q quit",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
         footer,
     );
 
@@ -673,7 +709,10 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::new().borders(Borders::ALL).title("decompilation");
 
     if app.order.is_empty() {
-        let msg = app.fatal.clone().unwrap_or_else(|| app.build_status.clone());
+        let msg = app
+            .fatal
+            .clone()
+            .unwrap_or_else(|| app.build_status.clone());
         f.render_widget(Paragraph::new(format!("\n  {msg}")).block(block), area);
         return;
     }

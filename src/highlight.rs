@@ -32,14 +32,14 @@ pub struct Tok {
 /// Control-flow / storage keywords (type keywords are handled separately so they
 /// match angr's `type` spans).
 const KEYWORDS: &[&str] = &[
-    "if", "else", "for", "while", "do", "switch", "case", "default", "break",
-    "continue", "return", "goto", "sizeof", "typedef", "struct", "union", "enum",
-    "extern", "static", "const", "volatile", "register", "inline",
+    "if", "else", "for", "while", "do", "switch", "case", "default", "break", "continue", "return",
+    "goto", "sizeof", "typedef", "struct", "union", "enum", "extern", "static", "const",
+    "volatile", "register", "inline",
 ];
 
 const TYPE_KEYWORDS: &[&str] = &[
-    "void", "char", "short", "int", "long", "float", "double", "unsigned",
-    "signed", "_Bool", "bool",
+    "void", "char", "short", "int", "long", "float", "double", "unsigned", "signed", "_Bool",
+    "bool",
 ];
 
 /// Highlight `text` into per-line token runs, painting `spans` first.
@@ -209,11 +209,11 @@ fn is_ident_continue(c: char) -> bool {
 /// ANSI SGR parameter for a kind, or `None` to leave the text uncolored.
 pub fn ansi_code(kind: TokKind) -> Option<&'static str> {
     match kind {
-        TokKind::Keyword => Some("35;1"), // bold magenta
-        TokKind::Type => Some("36"),      // cyan
-        TokKind::Call => Some("94"),      // bright blue
-        TokKind::Number => Some("33"),    // yellow
-        TokKind::Str => Some("32"),       // green
+        TokKind::Keyword => Some("35;1"),     // bold magenta
+        TokKind::Type => Some("36"),          // cyan
+        TokKind::Call => Some("94"),          // bright blue
+        TokKind::Number => Some("33"),        // yellow
+        TokKind::Str => Some("32"),           // green
         TokKind::Comment => Some("38;5;245"), // medium gray (readable on dark bg)
         TokKind::Field | TokKind::Var | TokKind::Plain => None,
     }

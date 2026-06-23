@@ -25,6 +25,9 @@ pub enum WorkerMessage {
     Meta {
         /// objdump/BFD-style file format, e.g. `elf64-x86-64`.
         file_format: String,
+        /// The angr version in use, e.g. `9.2.221`.
+        #[serde(default)]
+        angr_version: Option<String>,
     },
     /// Coarse progress from the build worker (loading / CFG recovery).
     Progress {
@@ -71,12 +74,25 @@ pub struct FunctionInfo {
     /// codegen position map. Empty unless highlighting was requested.
     #[serde(default)]
     pub spans: Vec<HlSpan>,
+    /// Set when this function was served from cache and was decompiled by a
+    /// different angr version than the one in use now: the cached version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_version: Option<String>,
 }
 
 /// One semantic highlight span: `(start, length, kind)` over a function's text,
 /// deserialized from the worker's `[start, len, "kind"]` JSON arrays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlSpan(pub usize, pub usize, pub String);
+
+/// The comment placed above a function served from a cache that a different
+/// angr version produced.
+pub fn stale_comment(cached: &str, current: Option<&str>) -> String {
+    match current {
+        Some(cur) => format!("// cached: decompiled with angr {cached} (current: {cur})"),
+        None => format!("// cached: decompiled with angr {cached}"),
+    }
+}
 
 /// The cached full function catalog, letting warm runs skip Python.
 #[derive(Debug, Clone, Deserialize)]
@@ -88,7 +104,7 @@ pub struct CatalogCache {
     pub functions: Vec<FunctionInfo>,
 }
 
-/// One cached function decompilation (`decomp/<ver>/0x<addr>.json`).
+/// One cached function decompilation (`decomp/0x<addr>.json`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct DecompCache {
     pub text: String,
@@ -96,6 +112,9 @@ pub struct DecompCache {
     pub spans: Vec<HlSpan>,
     #[serde(default)]
     pub decompile_ms: Option<f64>,
+    /// The angr version that produced this decompilation.
+    #[serde(default)]
+    pub angr_version: Option<String>,
 }
 
 /// A function that could not be decompiled.

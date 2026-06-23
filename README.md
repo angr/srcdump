@@ -32,8 +32,12 @@ srcdump caches the CFG and the decompilation results, keyed by the SHA-256 of th
 ```
 ${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/db.adb              # CFG (angrdb)
 ${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/catalog.json        # function catalog
-${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/decomp/<angr-ver>/0x<addr>.json
+${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/decomp/0x<addr>.json
 ```
+
+Each decompilation records the angr version that produced it. A cached function
+decompiled by a different angr version than the one in use is reused (not
+re-decompiled) but annotated with a `// cached: decompiled with angr …` comment.
 
 - `--redecompile` — re-decompile everything, overwriting the cache (keeps the CFG).
 - `--rebuild` — rebuild the CFG and clear the decompilation cache.

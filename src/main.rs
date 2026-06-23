@@ -58,7 +58,11 @@ fn run() -> Result<()> {
     }
 
     let python = env::resolve(&env_opts).context("resolving Python environment")?;
-    let mode = if cli.list { Mode::List } else { Mode::Decompile };
+    let mode = if cli.list {
+        Mode::List
+    } else {
+        Mode::Decompile
+    };
 
     // CFG db and decompilation cache live side by side under the binary's hash;
     // `.load_libs` distinguishes the auto_load_libs variant.
@@ -187,8 +191,12 @@ fn try_cached(
         .collect();
     selected.sort_by_key(|f| f.addr);
 
+    // On a warm run no angr runs, so the catalog's version is the reference we
+    // flag stale decompilations against.
+    let reference = catalog.angr_version.clone();
     let mut result = DecompileResult {
         file_format: catalog.file_format,
+        angr_version: (!reference.is_empty()).then(|| reference.clone()),
         ..Default::default()
     };
 
@@ -198,14 +206,18 @@ fn try_cached(
     }
 
     // Decompilation: every selected function must be in the cache, else bail.
-    let version_dir = decomp_cache.join(&catalog.angr_version);
     for mut func in selected {
-        let path = version_dir.join(format!("0x{:x}.json", func.addr));
+        let path = decomp_cache.join(format!("0x{:x}.json", func.addr));
         let cached = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice::<DecompCache>(&b).ok());
         let Some(dc) = cached else {
             return Ok(None);
+        };
+        // Flag a decompilation produced by a different angr version.
+        func.stale_version = match &dc.angr_version {
+            Some(v) if *v != reference => Some(v.clone()),
+            _ => None,
         };
         func.text = Some(dc.text);
         func.spans = dc.spans;
@@ -220,9 +232,9 @@ fn matches_filters(func: &FunctionInfo, filters: &[String]) -> bool {
     if filters.is_empty() {
         return true;
     }
-    filters.iter().any(|raw| {
-        raw == &func.name || parse_int(raw).is_some_and(|addr| addr == func.addr)
-    })
+    filters
+        .iter()
+        .any(|raw| raw == &func.name || parse_int(raw).is_some_and(|addr| addr == func.addr))
 }
 
 /// Parse a `-f` address filter: `0x`-hex or decimal.

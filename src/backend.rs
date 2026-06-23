@@ -61,6 +61,8 @@ pub struct DecompileRequest {
 pub struct DecompileResult {
     /// objdump/BFD-style file format, e.g. `elf64-x86-64`.
     pub file_format: Option<String>,
+    /// The reference angr version (live version, or the catalog's on warm runs).
+    pub angr_version: Option<String>,
     /// Functions, sorted by address.
     pub functions: Vec<FunctionInfo>,
     /// Per-function decompilation failures, sorted by address.

@@ -66,17 +66,17 @@ def _angr_version() -> str:
 
 
 def _decomp_cache_dir(base_dir):
-    """Per-angr-version subdir of the decompilation cache, created on demand.
+    """The decompilation cache directory, created on demand.
 
-    Namespacing by angr version means a toolchain upgrade transparently
-    invalidates stale decompilations.
+    The angr version is recorded inside each cache file (not in the path), so
+    decompilations from older toolchains are kept and flagged rather than
+    discarded.
     """
     if not base_dir:
         return None
-    path = os.path.join(base_dir, _angr_version())
     try:
-        os.makedirs(path, exist_ok=True)
-        return path
+        os.makedirs(base_dir, exist_ok=True)
+        return base_dir
     except OSError:
         return None
 
@@ -351,8 +351,9 @@ def decompile_db(AngrDB, args) -> int:
     cfg_model = proj.kb.cfgs.get_most_accurate()
 
     fmt = file_format(proj)
-    # Every worker reports the file format; the orchestrator keeps the first.
-    emit({"kind": "meta", "file_format": fmt})
+    # Every worker reports the file format and angr version; the orchestrator
+    # keeps the first.
+    emit({"kind": "meta", "file_format": fmt, "angr_version": _angr_version()})
 
     sections = build_section_index(proj)
     functions = candidate_functions(proj, args)
@@ -399,13 +400,18 @@ def decompile_db(AngrDB, args) -> int:
         if not args.force_decompile:
             cached = _cache_read(cache_dir, func.addr)
             if cached is not None and cached.get("text") is not None:
-                emit({
+                msg = {
                     "kind": "function",
                     "text": cached["text"],
                     "decompile_ms": cached.get("decompile_ms"),
                     "spans": cached.get("spans", []) if args.highlight else [],
                     **base,
-                })
+                }
+                # Flag cache that was produced by a different angr version.
+                cached_ver = cached.get("angr_version")
+                if cached_ver and cached_ver != _angr_version():
+                    msg["stale_version"] = cached_ver
+                emit(msg)
                 continue
 
         try:
@@ -426,7 +432,12 @@ def decompile_db(AngrDB, args) -> int:
                 _cache_write(
                     cache_dir,
                     func.addr,
-                    {"text": text, "spans": spans, "decompile_ms": decompile_ms},
+                    {
+                        "text": text,
+                        "spans": spans,
+                        "decompile_ms": decompile_ms,
+                        "angr_version": _angr_version(),
+                    },
                 )
                 emit({
                     "kind": "function",

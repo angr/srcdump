@@ -114,9 +114,11 @@ pub fn remove(opts: &EnvOptions) -> Result<()> {
         status("aborted; nothing removed");
         return Ok(());
     }
-    std::fs::remove_dir_all(&env_dir)
-        .with_context(|| format!("removing {}", env_dir.display()))?;
-    status(&format!("removed managed environment at {}", env_dir.display()));
+    std::fs::remove_dir_all(&env_dir).with_context(|| format!("removing {}", env_dir.display()))?;
+    status(&format!(
+        "removed managed environment at {}",
+        env_dir.display()
+    ));
     Ok(())
 }
 
@@ -271,8 +273,7 @@ fn download_uv(bin_dir: &Path) -> Result<PathBuf> {
     let url =
         format!("https://github.com/astral-sh/uv/releases/latest/download/uv-{triple}.tar.gz");
     status(&format!("downloading uv ({triple})…"));
-    std::fs::create_dir_all(bin_dir)
-        .with_context(|| format!("creating {}", bin_dir.display()))?;
+    std::fs::create_dir_all(bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
 
     let resp = ureq::get(&url)
         .call()
@@ -358,8 +359,8 @@ fn find_venv_root(dir: &Path) -> Option<PathBuf> {
 }
 
 fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
-    let file = std::fs::File::open(zip_path)
-        .with_context(|| format!("opening {}", zip_path.display()))?;
+    let file =
+        std::fs::File::open(zip_path).with_context(|| format!("opening {}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("reading zip {}", zip_path.display()))?;
 
@@ -388,8 +389,8 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
             continue;
         }
 
-        let mut outfile = std::fs::File::create(&out)
-            .with_context(|| format!("writing {}", out.display()))?;
+        let mut outfile =
+            std::fs::File::create(&out).with_context(|| format!("writing {}", out.display()))?;
         std::io::copy(&mut entry, &mut outfile)?;
         apply_mode(&out, mode)?;
     }
@@ -416,7 +417,10 @@ fn data_dir() -> PathBuf {
         return PathBuf::from(x).join("srcdump");
     }
     if let Some(h) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(h).join(".local").join("share").join("srcdump");
+        return PathBuf::from(h)
+            .join(".local")
+            .join("share")
+            .join("srcdump");
     }
     std::env::temp_dir().join("srcdump")
 }
@@ -428,7 +432,9 @@ fn exe_dir() -> Option<PathBuf> {
 }
 
 fn read_marker(p: &Path) -> Option<String> {
-    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn write_marker(p: &Path, token: &str) -> Result<()> {
