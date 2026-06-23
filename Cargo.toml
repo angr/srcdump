@@ -5,6 +5,11 @@ edition = "2021"
 description = "objdump-like tool that displays decompiled code, backed by angr"
 license = "BSD-2-Clause"
 readme = "README.md"
+repository = "https://github.com/angr/srcdump"
+homepage = "https://github.com/angr/srcdump"
+keywords = ["decompiler", "angr", "reverse-engineering", "disassembler", "objdump"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+exclude = ["/.github", "/tests", "/x.rec"]
 
 [[bin]]
 name = "srcdump"
