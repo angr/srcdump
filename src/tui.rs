@@ -46,7 +46,7 @@ fn style_for(kind: TokKind) -> Style {
         TokKind::Call => st.fg(Color::LightBlue),
         TokKind::Number => st.fg(Color::Yellow),
         TokKind::Str => st.fg(Color::Green),
-        TokKind::Comment => st.fg(Color::DarkGray),
+        TokKind::Comment => st.fg(Color::Indexed(245)),
         TokKind::Field | TokKind::Var | TokKind::Plain => st,
     }
 }
@@ -369,11 +369,14 @@ impl App {
     }
 
     /// Build the fully-styled document line for function `i` at block-offset
-    /// `off`. When `cursor`, every span gets a highlight background.
-    fn doc_line(&self, i: usize, off: usize, cursor: bool) -> Line<'static> {
+    /// `off`. When `cursor`, every span gets a highlight background and the line
+    /// is padded with a background spacer out to `width` so the highlight spans
+    /// the full panel.
+    fn doc_line(&self, i: usize, off: usize, cursor: bool, width: usize) -> Line<'static> {
         let entry = &self.entries[&self.order[i]];
         let bg = |st: Style| if cursor { st.bg(CURSOR_BG) } else { st };
 
+        let mut spans: Vec<Span> = Vec::new();
         if off == 0 {
             let mut h = format!("// 0x{:x} <{}>", entry.info.addr, entry.info.name);
             if let Some(sec) = &entry.info.section {
@@ -384,36 +387,49 @@ impl App {
                     h.push_str(&format!("  {ms:.0} ms"));
                 }
             }
-            let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-            return Line::from(Span::styled(h, bg(style)));
+            spans.push(Span::styled(
+                h,
+                bg(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ));
+        } else {
+            let body = off - 1;
+            match entry.status {
+                // For `Done`, missing past the last code line is the blank
+                // separator (no spans).
+                Status::Done => {
+                    if let Some(toks) = entry.lines.get(body) {
+                        for t in toks {
+                            spans.push(Span::styled(t.text.clone(), bg(style_for(t.kind))));
+                        }
+                    }
+                }
+                // Pending/failed bodies are a single line; anything after is blank.
+                Status::Pending if body == 0 => spans.push(Span::styled(
+                    "    Decompiling…".to_string(),
+                    bg(Style::default().fg(Color::Yellow)),
+                )),
+                Status::Failed if body == 0 => spans.push(Span::styled(
+                    format!(
+                        "    ✗ {}",
+                        entry.error.as_deref().unwrap_or("decompilation failed")
+                    ),
+                    bg(Style::default().fg(Color::Red)),
+                )),
+                _ => {}
+            }
         }
 
-        let body = off - 1;
-        match entry.status {
-            // For `Done`, `get` returns `None` past the last code line — that's
-            // the trailing blank separator.
-            Status::Done => match entry.lines.get(body) {
-                Some(toks) if !toks.is_empty() => Line::from(
-                    toks.iter()
-                        .map(|t| Span::styled(t.text.clone(), bg(style_for(t.kind))))
-                        .collect::<Vec<_>>(),
-                ),
-                _ => Line::from(Span::styled(String::new(), bg(Style::default()))),
-            },
-            // Pending/failed bodies are a single line; anything after is blank.
-            Status::Pending if body == 0 => Line::from(Span::styled(
-                "    Decompiling…".to_string(),
-                bg(Style::default().fg(Color::Yellow)),
-            )),
-            Status::Failed if body == 0 => Line::from(Span::styled(
-                format!(
-                    "    ✗ {}",
-                    entry.error.as_deref().unwrap_or("decompilation failed")
-                ),
-                bg(Style::default().fg(Color::Red)),
-            )),
-            _ => Line::from(Span::styled(String::new(), bg(Style::default()))),
+        // Extend the highlight to the right edge of the panel.
+        if cursor {
+            let used: usize = spans.iter().map(Span::width).sum();
+            if used < width {
+                spans.push(Span::styled(
+                    " ".repeat(width - used),
+                    Style::default().bg(CURSOR_BG),
+                ));
+            }
         }
+        Line::from(spans)
     }
 
     /// Find (function index, block offset) for an absolute document line.
@@ -663,6 +679,7 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let view_h = area.height.saturating_sub(2) as usize;
+    let inner_w = area.width.saturating_sub(2) as usize;
     app.page = view_h;
     let cursor = app.cursor_line();
 
@@ -679,7 +696,7 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::with_capacity(view_h);
     for abs in app.scroll..(app.scroll + view_h).min(app.total_lines) {
         let (i, off) = app.locate(abs);
-        lines.push(app.doc_line(i, off, abs == cursor));
+        lines.push(app.doc_line(i, off, abs == cursor, inner_w));
     }
 
     f.render_widget(Paragraph::new(lines).block(block), area);

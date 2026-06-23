@@ -214,7 +214,7 @@ pub fn ansi_code(kind: TokKind) -> Option<&'static str> {
         TokKind::Call => Some("94"),      // bright blue
         TokKind::Number => Some("33"),    // yellow
         TokKind::Str => Some("32"),       // green
-        TokKind::Comment => Some("90"),   // bright black (gray)
+        TokKind::Comment => Some("38;5;245"), // medium gray (readable on dark bg)
         TokKind::Field | TokKind::Var | TokKind::Plain => None,
     }
 }
