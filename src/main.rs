@@ -111,15 +111,16 @@ fn run() -> Result<()> {
     }
 
     // Each angr worker can use a lot of RAM, so cap the worker count to what
-    // available memory can support (~4 GiB each).
-    let jobs = budget_workers(cli.job_count(), sysmem::available_bytes());
+    // available memory can support.
+    let per_worker = ram_per_worker();
+    let jobs = budget_workers(cli.job_count(), sysmem::available_bytes(), per_worker);
     if jobs < cli.job_count() {
         eprintln!(
             "srcdump: limiting to {jobs} worker(s) — {} available, budgeting {} each",
             sysmem::available_bytes()
                 .map(sysmem::human_bytes)
                 .unwrap_or_else(|| "?".into()),
-            sysmem::human_bytes(RAM_PER_WORKER),
+            sysmem::human_bytes(per_worker),
         );
     }
 
@@ -260,17 +261,42 @@ fn parse_int(s: &str) -> Option<u64> {
     }
 }
 
-/// RAM budgeted per angr worker.
-const RAM_PER_WORKER: u64 = 4 * 1024 * 1024 * 1024;
+/// RAM budgeted per angr worker by default.
+const RAM_PER_WORKER: u64 = 3 * 1024 * 1024 * 1024;
+/// Smaller budget on CI, where test binaries are tiny but runners are small —
+/// so the cap doesn't needlessly throttle parallelism.
+const CI_RAM_PER_WORKER: u64 = 1024 * 1024 * 1024;
 
-/// Cap the worker count so each worker has roughly [`RAM_PER_WORKER`] of
+/// The per-worker RAM budget: `$SRCDUMP_WORKER_RAM_MB` if set, else a smaller
+/// value under CI, else the default.
+fn ram_per_worker() -> u64 {
+    if let Some(mb) = std::env::var("SRCDUMP_WORKER_RAM_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        return mb * 1024 * 1024;
+    }
+    if running_on_ci() {
+        return CI_RAM_PER_WORKER;
+    }
+    RAM_PER_WORKER
+}
+
+/// Whether we're running under a CI system (e.g. GitHub Actions sets `CI=true`).
+fn running_on_ci() -> bool {
+    std::env::var("CI")
+        .map(|v| !matches!(v.as_str(), "" | "0" | "false" | "False" | "FALSE"))
+        .unwrap_or(false)
+}
+
+/// Cap the worker count so each worker has roughly `per_worker` bytes of
 /// headroom. `available` is available RAM in bytes, or `None` when it can't be
 /// determined (then `requested` is left unchanged). Always allows at least one
 /// worker.
-fn budget_workers(requested: usize, available: Option<u64>) -> usize {
+fn budget_workers(requested: usize, available: Option<u64>, per_worker: u64) -> usize {
     match available {
         Some(bytes) => {
-            let by_ram = (bytes / RAM_PER_WORKER).max(1) as usize;
+            let by_ram = (bytes / per_worker.max(1)).max(1) as usize;
             requested.min(by_ram)
         }
         None => requested,
@@ -394,14 +420,16 @@ mod tests {
     #[test]
     fn worker_budget_caps_by_available_ram() {
         let gib = 1024 * 1024 * 1024;
-        // 64 GiB / 4 GiB = 16 -> capped from 32.
-        assert_eq!(budget_workers(32, Some(64 * gib)), 16);
+        // 64 GiB / 3 GiB = 21 -> capped from 32.
+        assert_eq!(budget_workers(32, Some(64 * gib), 3 * gib), 21);
         // Requested below the RAM budget is left alone.
-        assert_eq!(budget_workers(8, Some(64 * gib)), 8);
-        // Under 4 GiB still allows one worker.
-        assert_eq!(budget_workers(32, Some(2 * gib)), 1);
-        assert_eq!(budget_workers(32, Some(0)), 1);
+        assert_eq!(budget_workers(8, Some(64 * gib), 3 * gib), 8);
+        // Under one budget unit still allows one worker.
+        assert_eq!(budget_workers(32, Some(2 * gib), 3 * gib), 1);
+        assert_eq!(budget_workers(32, Some(0), 3 * gib), 1);
+        // A different (e.g. CI) budget changes the cap.
+        assert_eq!(budget_workers(32, Some(8 * gib), gib), 8);
         // Unknown available memory -> no cap.
-        assert_eq!(budget_workers(32, None), 32);
+        assert_eq!(budget_workers(32, None, 3 * gib), 32);
     }
 }
