@@ -1,0 +1,49 @@
+name: e2e
+
+# End-to-end: provision angr via uv and decompile a real binary. Only on PRs,
+# since it installs a few hundred MB and takes minutes.
+on:
+  pull_request:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  decompile:
+    name: decompile (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build
+        run: cargo build --release
+      - name: List functions (provisions angr)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --release --quiet -- --yes -l tests/fixtures/addsample > list.txt
+          cat list.txt
+          grep -E ' main$' list.txt
+          grep -E ' add$'  list.txt
+      - name: Decompile main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --release --quiet -- --yes -f main tests/fixtures/addsample > main.txt
+          cat main.txt
+          grep -F '<main>' main.txt
+          grep -F 'return' main.txt
