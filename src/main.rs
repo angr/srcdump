@@ -443,6 +443,7 @@ mod tests {
             text: None,
             decompile_ms: None,
             spans: Vec::new(),
+            stale_version: None,
         }
     }
 

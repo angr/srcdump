@@ -23,3 +23,14 @@ pub fn human_bytes(bytes: u64) -> String {
         format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_bytes_units() {
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0 GiB");
+        assert_eq!(human_bytes(512 * 1024 * 1024), "512 MiB");
+    }
+}
