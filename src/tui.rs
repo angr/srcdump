@@ -10,8 +10,9 @@
 //!
 //! Keys: `j`/`k` move the highlighted line (crossing function boundaries),
 //! `PgUp`/`PgDn` scroll by a page, `.`/`,` jump to the next/previous function,
-//! `g` go to a function by name or address, `f` toggles the function panel,
-//! `h` toggles help, `q`/`Esc` quits.
+//! `g` go to a function by name or address, `/` full-text search (`F3`/`F4`
+//! next/prev match), `f` toggles the function panel, `h` toggles help, `q`/`Esc`
+//! quits.
 
 use crate::backend::DecompileRequest;
 use crate::highlight::{self, Tok, TokKind};
@@ -112,6 +113,11 @@ struct App {
     // submission found no match.
     goto: Option<String>,
     goto_failed: bool,
+    // Full-text search: the dialog input (when open), the active query for
+    // F3/F4, and whether the last search found nothing.
+    search: Option<String>,
+    search_query: Option<String>,
+    search_failed: bool,
 
     build_status: String,
     done: bool,
@@ -146,6 +152,9 @@ impl App {
             show_times: false,
             goto: None,
             goto_failed: false,
+            search: None,
+            search_query: None,
+            search_failed: false,
             build_status: "Starting…".to_string(),
             done: false,
             done_count: 0,
@@ -208,6 +217,89 @@ impl App {
                 self.goto_failed = false;
             }
             None => self.goto_failed = true,
+        }
+    }
+
+    fn open_search(&mut self) {
+        self.search = Some(String::new());
+        self.search_failed = false;
+    }
+
+    fn search_push(&mut self, c: char) {
+        if let Some(buf) = self.search.as_mut() {
+            buf.push(c);
+        }
+        self.search_failed = false;
+    }
+
+    fn search_backspace(&mut self) {
+        if let Some(buf) = self.search.as_mut() {
+            buf.pop();
+        }
+        self.search_failed = false;
+    }
+
+    /// Run the typed query: jump to the first match at or after the cursor.
+    fn search_submit(&mut self) {
+        let query = self.search.clone().unwrap_or_default();
+        if query.trim().is_empty() {
+            self.search = None;
+            return;
+        }
+        self.search_query = Some(query.clone());
+        let needle = query.to_lowercase();
+        let start = self.cursor_line();
+        match find_match(self.total_lines, &needle, start, true, |abs| {
+            self.doc_line_text(abs)
+        }) {
+            Some(abs) => {
+                self.set_cursor_to_line(abs);
+                self.search = None;
+                self.search_failed = false;
+            }
+            None => self.search_failed = true,
+        }
+    }
+
+    /// Continue the active search (F3 forward, F4 backward).
+    fn search_next(&mut self, forward: bool) {
+        let Some(query) = self.search_query.clone() else {
+            return;
+        };
+        if self.total_lines == 0 {
+            return;
+        }
+        let needle = query.to_lowercase();
+        let n = self.total_lines;
+        let cur = self.cursor_line();
+        let start = if forward {
+            (cur + 1) % n
+        } else {
+            (cur + n - 1) % n
+        };
+        if let Some(abs) = find_match(n, &needle, start, forward, |abs| self.doc_line_text(abs)) {
+            self.set_cursor_to_line(abs);
+        }
+    }
+
+    /// Plain (unstyled) text of one document line, for searching.
+    fn doc_line_text(&self, abs: usize) -> String {
+        let (i, off) = self.locate(abs);
+        let entry = &self.entries[&self.order[i]];
+        if off == 0 {
+            let mut h = format!("// 0x{:x} <{}>", entry.info.addr, entry.info.name);
+            if let Some(sec) = &entry.info.section {
+                h.push_str(&format!("  {sec}"));
+            }
+            return h;
+        }
+        match entry.status {
+            Status::Done => entry
+                .lines
+                .get(off - 1)
+                .map(|toks| toks.iter().map(|t| t.text.as_str()).collect())
+                .unwrap_or_default(),
+            _ => String::new(),
         }
     }
 
@@ -640,9 +732,23 @@ fn event_loop(
                     }
                     continue;
                 }
+                // Likewise for the search dialog.
+                if app.search.is_some() {
+                    match key.code {
+                        KeyCode::Esc => app.search = None,
+                        KeyCode::Enter => app.search_submit(),
+                        KeyCode::Backspace => app.search_backspace(),
+                        KeyCode::Char(c) => app.search_push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(()),
                     (KeyCode::Char('g'), _) => app.open_goto(),
+                    (KeyCode::Char('/'), _) => app.open_search(),
+                    (KeyCode::F(3), _) => app.search_next(true),
+                    (KeyCode::F(4), _) => app.search_next(false),
                     (KeyCode::Char('h'), _) => app.show_help = !app.show_help,
                     (KeyCode::Char('f'), _) => app.show_sidebar = !app.show_sidebar,
                     (KeyCode::Char('t'), _) => app.show_times = !app.show_times,
@@ -687,8 +793,10 @@ fn render(f: &mut Frame, app: &mut App) {
     render_status(f, app, status);
 
     f.render_widget(
-        Paragraph::new(" j/k line   ./, function   g goto   f panel   t times   h help   q quit")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(
+            " j/k line   ./, func   g goto   / search   F3/F4 next/prev   f panel   h help   q quit",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
         footer,
     );
 
@@ -698,6 +806,30 @@ fn render(f: &mut Frame, app: &mut App) {
     if let Some(query) = &app.goto {
         render_goto(f, query, app.goto_failed);
     }
+    if let Some(query) = &app.search {
+        render_search(f, query, app.search_failed);
+    }
+}
+
+/// Centered full-text search dialog.
+fn render_search(f: &mut Frame, query: &str, failed: bool) {
+    let area = centered_rect(56, 6, f.area());
+    f.render_widget(Clear, area);
+    let (title, color) = if failed {
+        ("Search — not found", Color::Red)
+    } else {
+        ("Search", Color::White)
+    };
+    let text = format!("\n  /{query}▏\n\n  Enter: find · F3: next · F4: prev · Esc: cancel");
+    f.render_widget(
+        Paragraph::new(text).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(Style::default().fg(color)),
+        ),
+        area,
+    );
 }
 
 /// Centered "go to function" input dialog.
@@ -830,8 +962,8 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_help(f: &mut Frame) {
-    let area = centered_rect(62, 12, f.area());
-    let text = "\n  j / k         move the highlighted line (crosses functions)\n  PgUp / PgDn   scroll by a page\n  . / ,         jump to next / previous function\n  g             go to a function by name or address\n  f             toggle the function panel\n  t             toggle decompilation times\n  h             toggle this help\n  q / Esc       quit";
+    let area = centered_rect(64, 14, f.area());
+    let text = "\n  j / k         move the highlighted line (crosses functions)\n  PgUp / PgDn   scroll by a page\n  . / ,         jump to next / previous function\n  g             go to a function by name or address\n  /             full-text search\n  F3 / F4       next / previous search match\n  f             toggle the function panel\n  t             toggle decompilation times\n  h             toggle this help\n  q / Esc       quit";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(
@@ -863,6 +995,32 @@ fn resolve_goto(query: &str, funcs: &[(u64, String, u64)]) -> Option<usize> {
     funcs
         .iter()
         .position(|(a, _, size)| *a <= addr && addr < a.saturating_add((*size).max(1)))
+}
+
+/// Find the first document line (of `n`) matching `needle` (already
+/// lowercased), scanning from `start` in the given direction and wrapping
+/// around. `text(abs)` yields a line's plain text. Returns its index, or `None`.
+fn find_match(
+    n: usize,
+    needle: &str,
+    start: usize,
+    forward: bool,
+    text: impl Fn(usize) -> String,
+) -> Option<usize> {
+    if n == 0 || needle.is_empty() {
+        return None;
+    }
+    for k in 0..n {
+        let abs = if forward {
+            (start + k) % n
+        } else {
+            ((start as i64 - k as i64).rem_euclid(n as i64)) as usize
+        };
+        if text(abs).to_lowercase().contains(needle) {
+            return Some(abs);
+        }
+    }
+    None
 }
 
 /// Parse an address: optional `0x`/`0X` prefix, hex digits.
@@ -946,5 +1104,29 @@ mod tests {
         assert_eq!(resolve_goto("", &f), None);
         assert_eq!(resolve_goto("nope", &f), None);
         assert_eq!(resolve_goto("0x9999", &f), None); // outside every function
+    }
+
+    #[test]
+    fn search_forward_backward_and_wrap() {
+        let lines = [
+            "aaa".to_string(),
+            "the MATCH here".to_string(),
+            "bbb".to_string(),
+            "another match".to_string(),
+        ];
+        let n = lines.len();
+        let text = |i: usize| lines[i].clone();
+        // case-insensitive, forward from 0 -> line 1
+        assert_eq!(find_match(n, "match", 0, true, text), Some(1));
+        // forward from line 2 -> line 3
+        assert_eq!(find_match(n, "match", 2, true, text), Some(3));
+        // forward from line 3+1 wraps past end back to line 1
+        assert_eq!(find_match(n, "match", (3 + 1) % n, true, text), Some(1));
+        // backward from line 0 wraps to line 3
+        assert_eq!(find_match(n, "match", 0, false, text), Some(3));
+        // no match / empty needle
+        assert_eq!(find_match(n, "zzz", 0, true, text), None);
+        assert_eq!(find_match(n, "", 0, true, text), None);
+        assert_eq!(find_match(0, "x", 0, true, |_| String::new()), None);
     }
 }
