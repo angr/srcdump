@@ -102,4 +102,5 @@ Immediate next steps:
 - Improve angr so that decompilation of functions is faster.
 - Binary language detection.
 - Decompile to Rust pseudocode for Rust binaries.
+- Line wrapping in angr decompiler.
 
