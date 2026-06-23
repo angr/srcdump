@@ -328,7 +328,10 @@ def build_db(angr, AngrDB, args) -> int:
     emit({"kind": "progress", "stage": "save"})
     tmp = f"{args.db}.tmp.{os.getpid()}"
     try:
-        AngrDB(project=proj).dump(tmp)
+        # nullpool=True so AngrDB doesn't keep a pooled SQLite connection (and
+        # thus the file handle) open after dump(); otherwise the rename fails on
+        # Windows, which can't move a file that's still open.
+        AngrDB(project=proj, nullpool=True).dump(tmp)
         os.replace(tmp, args.db)
     except Exception as exc:
         try:

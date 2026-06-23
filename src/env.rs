@@ -35,7 +35,7 @@ pub fn resolve(opts: &EnvOptions) -> Result<PathBuf> {
         return Ok(PathBuf::from(p));
     }
     if let Some(dir) = &opts.venv {
-        let py = dir.join("bin").join("python");
+        let py = venv_python(dir);
         if !py.is_file() {
             bail!(
                 "--venv {}: no interpreter at {} (is it a venv with angr installed?)",
@@ -65,7 +65,7 @@ fn remove_hint(opts: &EnvOptions, env_dir: &Path) -> String {
 /// First-run notice shown before uv provisioning, telling the user what srcdump
 /// is about to download/install and how to undo it.
 fn print_uv_notice(opts: &EnvOptions, env_dir: &Path, data_dir: &Path) {
-    let needs_uv = !uv_on_path() && !data_dir.join("bin").join("uv").is_file();
+    let needs_uv = !uv_on_path() && !uv_bin(data_dir).is_file();
     eprintln!();
     eprintln!("srcdump: setting up the angr environment (first run). This will:");
     if needs_uv {
@@ -145,7 +145,7 @@ fn confirm(question: &str, default_yes: bool) -> Result<bool> {
 fn ensure_managed(opts: &EnvOptions) -> Result<PathBuf> {
     let data_dir = data_dir();
     let env_dir = resolve_env_dir(opts);
-    let python = env_dir.join("bin").join("python");
+    let python = venv_python(&env_dir);
 
     let archive = resolve_archive(opts)?;
     let token = match &archive {
@@ -222,7 +222,7 @@ fn resolve_archive(opts: &EnvOptions) -> Result<Option<PathBuf>> {
 
 fn provision_with_uv(opts: &EnvOptions, env_dir: &Path, data_dir: &Path) -> Result<()> {
     let uv = ensure_uv(data_dir)?;
-    let python = env_dir.join("bin").join("python");
+    let python = venv_python(env_dir);
 
     if !python.is_file() {
         run(
@@ -251,7 +251,7 @@ fn ensure_uv(data_dir: &Path) -> Result<PathBuf> {
     if uv_on_path() {
         return Ok(PathBuf::from("uv"));
     }
-    let local = data_dir.join("bin").join("uv");
+    let local = uv_bin(data_dir);
     if local.is_file() {
         return Ok(local);
     }
@@ -270,19 +270,25 @@ fn uv_on_path() -> bool {
 
 fn download_uv(bin_dir: &Path) -> Result<PathBuf> {
     let triple = uv_target_triple()?;
-    let url =
-        format!("https://github.com/astral-sh/uv/releases/latest/download/uv-{triple}.tar.gz");
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    let url = format!("https://github.com/astral-sh/uv/releases/latest/download/uv-{triple}.{ext}");
     status(&format!("downloading uv ({triple})…"));
     std::fs::create_dir_all(bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
 
     let resp = ureq::get(&url)
         .call()
         .with_context(|| format!("downloading {url}"))?;
-    let reader = resp.into_body().into_reader();
+    let mut reader = resp.into_body().into_reader();
+    let dest = bin_dir.join(uv_exe_name());
+    extract_uv(&mut reader, &dest, &url)?;
+    Ok(dest)
+}
+
+/// Extract the `uv` binary from the release tarball (unix).
+#[cfg(not(windows))]
+fn extract_uv(reader: &mut impl Read, dest: &Path, url: &str) -> Result<()> {
     let gz = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(gz);
-
-    let dest = bin_dir.join("uv");
     for entry in archive.entries().context("reading uv archive")? {
         let mut entry = entry?;
         let is_uv = entry
@@ -291,14 +297,37 @@ fn download_uv(bin_dir: &Path) -> Result<PathBuf> {
             .and_then(|p| p.file_name().map(|n| n == "uv"))
             .unwrap_or(false);
         if is_uv {
-            let mut out = std::fs::File::create(&dest)
+            let mut out = std::fs::File::create(dest)
                 .with_context(|| format!("writing {}", dest.display()))?;
             std::io::copy(&mut entry, &mut out)?;
-            set_executable(&dest)?;
-            return Ok(dest);
+            set_executable(dest)?;
+            return Ok(());
         }
     }
     bail!("uv binary not found inside {url}");
+}
+
+/// Extract `uv.exe` from the release zip (Windows). Zip needs `Seek`, so the
+/// (small) archive is buffered.
+#[cfg(windows)]
+fn extract_uv(reader: &mut impl Read, dest: &Path, url: &str) -> Result<()> {
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).context("reading uv zip")?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i)?;
+        let is_uv = entry
+            .enclosed_name()
+            .and_then(|p| p.file_name().map(|n| n == "uv.exe"))
+            .unwrap_or(false);
+        if is_uv {
+            let mut out = std::fs::File::create(dest)
+                .with_context(|| format!("writing {}", dest.display()))?;
+            std::io::copy(&mut entry, &mut out)?;
+            return Ok(());
+        }
+    }
+    bail!("uv.exe not found inside {url}");
 }
 
 fn uv_target_triple() -> Result<&'static str> {
@@ -308,8 +337,34 @@ fn uv_target_triple() -> Result<&'static str> {
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
         (os, arch) => bail!("no prebuilt uv for {os}/{arch}; install uv manually and re-run"),
     })
+}
+
+/// Filename of the uv executable for this OS.
+fn uv_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "uv.exe"
+    } else {
+        "uv"
+    }
+}
+
+/// Interpreter path inside a venv: `bin/python` on unix, `Scripts/python.exe`
+/// on Windows.
+fn venv_python(dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        dir.join("Scripts").join("python.exe")
+    } else {
+        dir.join("bin").join("python")
+    }
+}
+
+/// Path to the managed `uv` binary under the data dir.
+fn uv_bin(data_dir: &Path) -> PathBuf {
+    data_dir.join("bin").join(uv_exe_name())
 }
 
 // ---------------------------------------------------------------------------
@@ -342,16 +397,16 @@ fn provision_from_archive(archive: &Path, env_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A venv root is a directory containing `bin/python`, either the extraction
+/// A venv root is a directory containing the interpreter, either the extraction
 /// dir itself or a single top-level subdirectory of it.
 fn find_venv_root(dir: &Path) -> Option<PathBuf> {
-    if dir.join("bin").join("python").is_file() {
+    if venv_python(dir).is_file() {
         return Some(dir.to_path_buf());
     }
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let p = entry.path();
-        if p.is_dir() && p.join("bin").join("python").is_file() {
+        if p.is_dir() && venv_python(&p).is_file() {
             return Some(p);
         }
     }
@@ -524,10 +579,17 @@ impl Flock {
 
 #[cfg(not(unix))]
 impl Flock {
-    fn acquire(_path: &Path) -> Result<Self> {
-        // Best-effort: no locking on non-unix.
-        Ok(Self {
-            _file: std::fs::File::open(std::env::temp_dir()).unwrap(),
-        })
+    fn acquire(path: &Path) -> Result<Self> {
+        // No flock() off-unix; just hold the lock file open (best effort).
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("opening lock {}", path.display()))?;
+        Ok(Self { _file: file })
     }
 }

@@ -59,11 +59,22 @@ impl Cancellation {
     }
 }
 
+#[cfg(unix)]
 fn kill(pid: u32) {
     // Best effort; a pid that already exited just yields ESRCH.
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
+}
+
+#[cfg(windows)]
+fn kill(pid: u32) {
+    // No fork/signal model on Windows; terminate the process tree via taskkill.
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 pub struct ProcessPoolBackend {

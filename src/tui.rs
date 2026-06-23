@@ -794,7 +794,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
     f.render_widget(
         Paragraph::new(
-            " j/k line   ./, func   g goto   / search   F3/F4 next/prev   f panel   h help   q quit",
+            " j/k line   PgUp/PgDn page   ./, function   g goto   / search   F3/F4 next/prev   f panel   h help   q quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         footer,
