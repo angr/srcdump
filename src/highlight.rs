@@ -218,3 +218,52 @@ pub fn ansi_code(kind: TokKind) -> Option<&'static str> {
         TokKind::Field | TokKind::Var | TokKind::Plain => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::HlSpan;
+
+    fn find(line: &[Tok], text: &str) -> Option<TokKind> {
+        line.iter().find(|t| t.text == text).map(|t| t.kind)
+    }
+
+    #[test]
+    fn lexes_keywords_comments_numbers() {
+        let lines = highlight_lines("if (x) return 0;  // c\n", &[]);
+        assert_eq!(lines.len(), 1);
+        let l = &lines[0];
+        assert_eq!(find(l, "if"), Some(TokKind::Keyword));
+        assert_eq!(find(l, "return"), Some(TokKind::Keyword));
+        assert_eq!(find(l, "0"), Some(TokKind::Number));
+        assert!(l
+            .iter()
+            .any(|t| t.kind == TokKind::Comment && t.text.contains("// c")));
+    }
+
+    #[test]
+    fn string_literal_is_string() {
+        let lines = highlight_lines("x = \"hi\";", &[]);
+        assert!(lines[0]
+            .iter()
+            .any(|t| t.kind == TokKind::Str && t.text == "\"hi\""));
+    }
+
+    #[test]
+    fn semantic_span_colors_identifier() {
+        // "Foo" isn't a keyword; the `type` span makes it a type.
+        let lines = highlight_lines("Foo x;", &[HlSpan(0, 3, "type".into())]);
+        assert_eq!(find(&lines[0], "Foo"), Some(TokKind::Type));
+    }
+
+    #[test]
+    fn quoted_constant_becomes_string() {
+        let lines = highlight_lines("\"s\"", &[HlSpan(0, 3, "const".into())]);
+        assert_eq!(lines[0][0].kind, TokKind::Str);
+    }
+
+    #[test]
+    fn splits_into_lines() {
+        assert_eq!(highlight_lines("a\nb\n", &[]).len(), 2);
+    }
+}

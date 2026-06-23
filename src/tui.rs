@@ -1107,3 +1107,14 @@ mod tests {
         assert_eq!(find_match(0, "x", 0, true, |_| String::new()), None);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_bytes_units() {
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0 GiB");
+        assert_eq!(human_bytes(512 * 1024 * 1024), "512 MiB");
+    }
+}

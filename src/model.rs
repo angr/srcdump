@@ -152,4 +152,18 @@ mod tests {
         let d2: DecompCache = serde_json::from_str(r#"{"text":"y"}"#).unwrap();
         assert_eq!(d2.angr_version, None);
     }
+
+    #[test]
+    fn hlspan_from_array() {
+        let s: HlSpan = serde_json::from_str("[3, 4, \"type\"]").unwrap();
+        assert_eq!((s.0, s.1, s.2.as_str()), (3, 4, "type"));
+    }
+
+    #[test]
+    fn decompcache_defaults() {
+        let d: DecompCache = serde_json::from_str("{\"text\":\"x\"}").unwrap();
+        assert_eq!(d.text, "x");
+        assert!(d.spans.is_empty());
+        assert!(d.decompile_ms.is_none());
+    }
 }

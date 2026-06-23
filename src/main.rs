@@ -432,4 +432,35 @@ mod tests {
         // Unknown available memory -> no cap.
         assert_eq!(budget_workers(32, None, 3 * gib), 32);
     }
+
+    fn func(name: &str, addr: u64) -> FunctionInfo {
+        FunctionInfo {
+            addr,
+            name: name.into(),
+            size: 0,
+            is_plt: false,
+            section: None,
+            text: None,
+            decompile_ms: None,
+            spans: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn parse_int_hex_and_decimal() {
+        assert_eq!(parse_int("0x10"), Some(16));
+        assert_eq!(parse_int("0X10"), Some(16));
+        assert_eq!(parse_int("16"), Some(16));
+        assert_eq!(parse_int("main"), None);
+    }
+
+    #[test]
+    fn filters_match_name_and_address() {
+        let f = func("main", 0x401000);
+        assert!(matches_filters(&f, &[]));
+        assert!(matches_filters(&f, &["main".into()]));
+        assert!(matches_filters(&f, &["0x401000".into()]));
+        assert!(matches_filters(&f, &["4198400".into()]));
+        assert!(!matches_filters(&f, &["other".into()]));
+    }
 }
