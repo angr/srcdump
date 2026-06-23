@@ -9,7 +9,7 @@ repository = "https://github.com/angr/srcdump"
 homepage = "https://github.com/angr/srcdump"
 keywords = ["decompiler", "angr", "reverse-engineering", "disassembler", "objdump"]
 categories = ["command-line-utilities", "development-tools::debugging"]
-exclude = ["/.github", "/tests", "/x.rec"]
+exclude = ["/.github", "/tests"]
 
 [[bin]]
 name = "srcdump"

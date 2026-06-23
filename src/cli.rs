@@ -4,6 +4,10 @@ use crate::progress::ProgressMode;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
+/// Version shown by `--version`: the crate version plus the git commit that
+/// built it (e.g. `0.1.0 (a1b2c3d)`), as wired up by `build.rs`.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("SRCDUMP_GIT_DESC"));
+
 /// When to use the interactive TUI instead of dumping to stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TuiMode {
@@ -31,7 +35,7 @@ pub enum ColorMode {
 /// By default `srcdump FILE` decompiles every recovered function in the
 /// binary, fanning the work out across one Python/angr worker per CPU.
 #[derive(Debug, Parser)]
-#[command(name = "srcdump", version, about, long_about = None)]
+#[command(name = "srcdump", version = VERSION, about, long_about = None)]
 pub struct Cli {
     /// The binary to decompile.
     #[arg(required_unless_present = "remove_env")]
