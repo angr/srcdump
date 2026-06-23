@@ -46,7 +46,7 @@ re-decompiled) but annotated with a `// cached: decompiled with angr …` commen
 ## Usage
 
 ```
-srcdump [OPTIONS] <FILE>
+srcdump [OPTIONS] [FILE]
 
 Options:
   -f, --function <NAME|ADDR>  Only decompile these functions (repeatable)
@@ -64,6 +64,9 @@ Options:
       --progress <WHEN>       Progress display: auto (default), always, never
       --tui <WHEN>            Interactive browser: auto (default), always, never
       --color <WHEN>          Syntax-highlight the dump: auto, always, never
+  -y, --yes                   Skip confirmation prompts (e.g. for --remove-env)
+  -h, --help                  Print help (-h for a summary)
+  -V, --version               Print version
 
   Python environment:
       --venv <DIR>            Use an existing virtualenv with angr (skips uv)
