@@ -10,7 +10,8 @@
 //!
 //! Keys: `j`/`k` move the highlighted line (crossing function boundaries),
 //! `PgUp`/`PgDn` scroll by a page, `.`/`,` jump to the next/previous function,
-//! `f` toggles the function panel, `h` toggles help, `q`/`Esc` quits.
+//! `g` go to a function by name or address, `f` toggles the function panel,
+//! `h` toggles help, `q`/`Esc` quits.
 
 use crate::backend::DecompileRequest;
 use crate::highlight::{self, Tok, TokKind};
@@ -107,6 +108,10 @@ struct App {
     show_sidebar: bool,
     show_help: bool,
     show_times: bool,
+    // The "go to function" dialog: the current input, and whether the last
+    // submission found no match.
+    goto: Option<String>,
+    goto_failed: bool,
 
     build_status: String,
     done: bool,
@@ -139,6 +144,8 @@ impl App {
             show_sidebar: true,
             show_help: false,
             show_times: false,
+            goto: None,
+            goto_failed: false,
             build_status: "Starting…".to_string(),
             done: false,
             done_count: 0,
@@ -160,6 +167,47 @@ impl App {
         if stale {
             self.mem_avail = read_mem_available();
             self.mem_checked = Some(now);
+        }
+    }
+
+    fn open_goto(&mut self) {
+        self.goto = Some(String::new());
+        self.goto_failed = false;
+    }
+
+    fn goto_push(&mut self, c: char) {
+        if let Some(buf) = self.goto.as_mut() {
+            buf.push(c);
+        }
+        self.goto_failed = false;
+    }
+
+    fn goto_backspace(&mut self) {
+        if let Some(buf) = self.goto.as_mut() {
+            buf.pop();
+        }
+        self.goto_failed = false;
+    }
+
+    /// Resolve the goto query and jump to the function, or flag "not found".
+    fn goto_submit(&mut self) {
+        let query = self.goto.clone().unwrap_or_default();
+        let funcs: Vec<(u64, String, u64)> = self
+            .order
+            .iter()
+            .map(|a| {
+                let e = &self.entries[a];
+                (*a, e.info.name.clone(), e.info.size)
+            })
+            .collect();
+        match resolve_goto(&query, &funcs) {
+            Some(idx) => {
+                self.sel = idx;
+                self.off = 0;
+                self.goto = None;
+                self.goto_failed = false;
+            }
+            None => self.goto_failed = true,
         }
     }
 
@@ -574,9 +622,27 @@ fn event_loop(
                     continue;
                 }
                 app.ensure_layout();
+                // Ctrl-C always quits.
+                if matches!(
+                    (key.code, key.modifiers),
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                ) {
+                    return Ok(());
+                }
+                // While the "go to" dialog is open, keys feed the text input.
+                if app.goto.is_some() {
+                    match key.code {
+                        KeyCode::Esc => app.goto = None,
+                        KeyCode::Enter => app.goto_submit(),
+                        KeyCode::Backspace => app.goto_backspace(),
+                        KeyCode::Char(c) => app.goto_push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(()),
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    (KeyCode::Char('g'), _) => app.open_goto(),
                     (KeyCode::Char('h'), _) => app.show_help = !app.show_help,
                     (KeyCode::Char('f'), _) => app.show_sidebar = !app.show_sidebar,
                     (KeyCode::Char('t'), _) => app.show_times = !app.show_times,
@@ -621,16 +687,38 @@ fn render(f: &mut Frame, app: &mut App) {
     render_status(f, app, status);
 
     f.render_widget(
-        Paragraph::new(
-            " j/k line   PgUp/PgDn page   ./, function   f panel   t times   h help   q quit",
-        )
-        .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(" j/k line   ./, function   g goto   f panel   t times   h help   q quit")
+            .style(Style::default().fg(Color::DarkGray)),
         footer,
     );
 
     if app.show_help {
         render_help(f);
     }
+    if let Some(query) = &app.goto {
+        render_goto(f, query, app.goto_failed);
+    }
+}
+
+/// Centered "go to function" input dialog.
+fn render_goto(f: &mut Frame, query: &str, failed: bool) {
+    let area = centered_rect(56, 6, f.area());
+    f.render_widget(Clear, area);
+    let (title, color) = if failed {
+        ("Go to — not found", Color::Red)
+    } else {
+        ("Go to function", Color::White)
+    };
+    let text = format!("\n  {query}▏\n\n  name or 0xADDR · Enter: go · Esc: cancel");
+    f.render_widget(
+        Paragraph::new(text).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(Style::default().fg(color)),
+        ),
+        area,
+    );
 }
 
 /// Bottom status bar: available memory plus cursor position percentages.
@@ -742,8 +830,8 @@ fn render_doc(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_help(f: &mut Frame) {
-    let area = centered_rect(60, 11, f.area());
-    let text = "\n  j / k         move the highlighted line (crosses functions)\n  PgUp / PgDn   scroll by a page\n  . / ,         jump to next / previous function\n  f             toggle the function panel\n  t             toggle decompilation times\n  h             toggle this help\n  q / Esc       quit";
+    let area = centered_rect(62, 12, f.area());
+    let text = "\n  j / k         move the highlighted line (crosses functions)\n  PgUp / PgDn   scroll by a page\n  . / ,         jump to next / previous function\n  g             go to a function by name or address\n  f             toggle the function panel\n  t             toggle decompilation times\n  h             toggle this help\n  q / Esc       quit";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(
@@ -754,6 +842,36 @@ fn render_help(f: &mut Frame) {
         ),
         area,
     );
+}
+
+/// Resolve a "go to" query against `funcs` (`(addr, name, size)`, sorted by
+/// address) to an index. Matches, in order: an exact function name, an exact
+/// address, then an address falling within a function's range. Bare numbers and
+/// `0x…` are both read as hex (that's how addresses are shown).
+fn resolve_goto(query: &str, funcs: &[(u64, String, u64)]) -> Option<usize> {
+    let q = query.trim();
+    if q.is_empty() {
+        return None;
+    }
+    if let Some(i) = funcs.iter().position(|(_, name, _)| name == q) {
+        return Some(i);
+    }
+    let addr = parse_addr(q)?;
+    if let Some(i) = funcs.iter().position(|(a, _, _)| *a == addr) {
+        return Some(i);
+    }
+    funcs
+        .iter()
+        .position(|(a, _, size)| *a <= addr && addr < a.saturating_add((*size).max(1)))
+}
+
+/// Parse an address: optional `0x`/`0X` prefix, hex digits.
+fn parse_addr(s: &str) -> Option<u64> {
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u64::from_str_radix(s, 16).ok()
 }
 
 /// A rectangle `width` columns wide and `height` rows tall, centered in `area`.
@@ -785,5 +903,48 @@ fn human_bytes(bytes: u64) -> String {
         format!("{gib:.1} GiB")
     } else {
         format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn funcs() -> Vec<(u64, String, u64)> {
+        vec![
+            (0x1000, "main".to_string(), 0x20),
+            (0x2000, "sub_2000".to_string(), 0x10),
+        ]
+    }
+
+    #[test]
+    fn goto_by_name() {
+        let f = funcs();
+        assert_eq!(resolve_goto("main", &f), Some(0));
+        assert_eq!(resolve_goto("sub_2000", &f), Some(1));
+        assert_eq!(resolve_goto("  main  ", &f), Some(0)); // trimmed
+    }
+
+    #[test]
+    fn goto_by_address() {
+        let f = funcs();
+        assert_eq!(resolve_goto("0x2000", &f), Some(1));
+        assert_eq!(resolve_goto("2000", &f), Some(1)); // bare hex
+        assert_eq!(resolve_goto("0X1000", &f), Some(0));
+    }
+
+    #[test]
+    fn goto_address_inside_function() {
+        let f = funcs();
+        assert_eq!(resolve_goto("0x1010", &f), Some(0)); // within main [0x1000,0x1020)
+        assert_eq!(resolve_goto("0x2005", &f), Some(1)); // within sub_2000
+    }
+
+    #[test]
+    fn goto_no_match() {
+        let f = funcs();
+        assert_eq!(resolve_goto("", &f), None);
+        assert_eq!(resolve_goto("nope", &f), None);
+        assert_eq!(resolve_goto("0x9999", &f), None); // outside every function
     }
 }

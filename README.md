@@ -78,6 +78,7 @@ Options:
 |-----|--------|
 | `j` / `k` | move the highlighted line down / up (crosses function boundaries) |
 | `.` / `,` | jump to the next / previous function |
+| `g` | go to a function by name or address (hex) |
 | `f` | toggle the function panel (sidebar) |
 | `t` | toggle per-function decompilation times (off by default) |
 | `h` | toggle the help panel |
