@@ -457,6 +457,29 @@ pub fn run(backend: ProcessPoolBackend, req: DecompileRequest, file: PathBuf) ->
     loop_result
 }
 
+/// Run the browser over an already-complete result (warm cache), without any
+/// Python workers. The result is fed into the app as if it had streamed in.
+pub fn run_cached(result: crate::backend::DecompileResult, file: PathBuf) -> Result<()> {
+    let mut terminal = setup_terminal().context("entering TUI")?;
+    let _guard = TerminalGuard;
+
+    let mut app = App::new(file);
+    if let Some(fmt) = result.file_format {
+        app.apply(WorkerMessage::Meta { file_format: fmt });
+    }
+    let total = result.functions.len();
+    for func in result.functions {
+        app.apply(WorkerMessage::Function(func));
+    }
+    app.total = total;
+    app.done = true;
+
+    // A pre-closed channel: the event loop just renders and handles input.
+    let (tx, rx) = mpsc::channel::<WorkerMessage>();
+    drop(tx);
+    event_loop(&mut terminal, &mut app, &rx)
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();

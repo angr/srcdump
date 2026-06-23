@@ -46,8 +46,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--include-plt", action="store_true")
     ap.add_argument("--highlight", action="store_true")
     ap.add_argument("--decomp-cache", default=None)
+    ap.add_argument("--catalog-cache", default=None)
     ap.add_argument("--force-decompile", action="store_true")
     return ap.parse_args(argv)
+
+
+_ANGR_VERSION = None
+
+
+def _angr_version() -> str:
+    global _ANGR_VERSION
+    if _ANGR_VERSION is None:
+        try:
+            import importlib.metadata as _md
+            _ANGR_VERSION = _md.version("angr")
+        except Exception:
+            _ANGR_VERSION = "unknown"
+    return _ANGR_VERSION
 
 
 def _decomp_cache_dir(base_dir):
@@ -58,17 +73,36 @@ def _decomp_cache_dir(base_dir):
     """
     if not base_dir:
         return None
-    try:
-        import importlib.metadata as _md
-        version = _md.version("angr")
-    except Exception:
-        version = "unknown"
-    path = os.path.join(base_dir, version)
+    path = os.path.join(base_dir, _angr_version())
     try:
         os.makedirs(path, exist_ok=True)
         return path
     except OSError:
         return None
+
+
+def _write_catalog_cache(path, file_format, functions):
+    """Persist the full function catalog so warm runs can skip Python."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w") as fh:
+            json.dump(
+                {
+                    "angr_version": _angr_version(),
+                    "file_format": file_format,
+                    "functions": functions,
+                },
+                fh,
+            )
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _cache_read(cache_dir, addr):
@@ -316,8 +350,9 @@ def decompile_db(AngrDB, args) -> int:
 
     cfg_model = proj.kb.cfgs.get_most_accurate()
 
+    fmt = file_format(proj)
     # Every worker reports the file format; the orchestrator keeps the first.
-    emit({"kind": "meta", "file_format": file_format(proj)})
+    emit({"kind": "meta", "file_format": fmt})
 
     sections = build_section_index(proj)
     functions = candidate_functions(proj, args)
@@ -339,6 +374,10 @@ def decompile_db(AngrDB, args) -> int:
             for f in functions
         ]
         emit({"kind": "catalog", "functions": catalog})
+        # Persist the full catalog so warm runs can skip Python entirely. Only
+        # for unfiltered runs, where this is the complete candidate set.
+        if args.catalog_cache and not args.function:
+            _write_catalog_cache(args.catalog_cache, fmt, catalog)
 
     # Tell the orchestrator how many functions this worker will handle so it
     # can sum them into a grand total for the progress display.

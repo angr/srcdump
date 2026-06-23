@@ -50,6 +50,8 @@ pub struct DecompileRequest {
     pub highlight: bool,
     /// Directory holding cached per-function decompilation results.
     pub decomp_cache: PathBuf,
+    /// File where worker 0 persists the full function catalog (full runs only).
+    pub catalog_cache: PathBuf,
     /// Re-decompile and overwrite the cache instead of reading it.
     pub force_decompile: bool,
 }

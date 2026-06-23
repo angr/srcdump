@@ -123,6 +123,8 @@ impl ProcessPoolBackend {
             if req.highlight {
                 cmd.arg("--highlight");
             }
+            // Worker 0 persists the catalog for both list and decompile runs.
+            cmd.arg("--catalog-cache").arg(&req.catalog_cache);
             // The decompilation cache only applies to the decompile workers.
             if mode == Mode::Decompile {
                 cmd.arg("--decomp-cache").arg(&req.decomp_cache);

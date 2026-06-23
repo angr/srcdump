@@ -15,9 +15,10 @@ mod progress;
 mod tui;
 
 use anyhow::{Context, Result};
-use backend::{DecompileBackend, DecompileRequest, Mode};
+use backend::{DecompileBackend, DecompileRequest, DecompileResult, Mode};
 use clap::Parser;
 use cli::{Cli, ColorMode, TuiMode};
+use model::{CatalogCache, DecompCache, FunctionInfo};
 use pool::ProcessPoolBackend;
 use progress::Progress;
 use sha2::{Digest, Sha256};
@@ -65,8 +66,12 @@ fn run() -> Result<()> {
     let suffix = if cli.load_libs { ".load_libs" } else { "" };
     let db_path = cache_base.join(format!("db{suffix}.adb"));
     let decomp_cache = cache_base.join(format!("decomp{suffix}"));
+    let plt = if cli.include_plt { ".plt" } else { "" };
+    let catalog_cache = cache_base.join(format!("catalog{suffix}{plt}.json"));
     if cli.rebuild {
         let _ = std::fs::remove_dir_all(&decomp_cache);
+        let _ = std::fs::remove_file(cache_base.join(format!("catalog{suffix}.json")));
+        let _ = std::fs::remove_file(cache_base.join(format!("catalog{suffix}.plt.json")));
     }
     let force_decompile = cli.redecompile || cli.rebuild;
 
@@ -89,6 +94,17 @@ fn run() -> Result<()> {
     let will_dump_code = !want_tui && cli.slowest.is_none() && !cli.list;
     let highlight = want_tui || (will_dump_code && dump_color);
 
+    // Warm path: if the catalog (and, for decompilation, every selected
+    // function) is already cached, build the result in Rust and skip Python.
+    if !force_decompile {
+        if let Some(result) = try_cached(&catalog_cache, &decomp_cache, &cli.functions, mode)? {
+            if want_tui {
+                return tui::run_cached(result, file);
+            }
+            return print_result(&result, cli.slowest, mode, dump_color, &file);
+        }
+    }
+
     let req = DecompileRequest {
         binary: file.clone(),
         functions: cli.functions.clone(),
@@ -101,6 +117,7 @@ fn run() -> Result<()> {
         rebuild: cli.rebuild,
         highlight,
         decomp_cache,
+        catalog_cache,
         force_decompile,
     };
 
@@ -120,21 +137,101 @@ fn run() -> Result<()> {
         progress.elapsed_str()
     ));
 
+    print_result(&result, cli.slowest, mode, dump_color, &file)
+}
+
+/// Render a finished result to stdout (list / slowest / decompilation).
+fn print_result(
+    result: &DecompileResult,
+    slowest: Option<usize>,
+    mode: Mode,
+    dump_color: bool,
+    file: &Path,
+) -> Result<()> {
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    if let Some(n) = cli.slowest {
-        output::print_slowest(&mut out, &file, &result, n)?;
+    if let Some(n) = slowest {
+        output::print_slowest(&mut out, file, result, n)?;
     } else {
         match mode {
-            Mode::List => output::print_listing(&mut out, &file, &result)?,
+            Mode::List => output::print_listing(&mut out, file, result)?,
             // `mode` is only ever List or Decompile here; Build is internal to the pool.
             Mode::Decompile | Mode::Build => {
-                output::print_decompilation(&mut out, &file, &result, dump_color)?
+                output::print_decompilation(&mut out, file, result, dump_color)?
             }
         }
     }
     out.flush()?;
     Ok(())
+}
+
+/// Try to satisfy the request entirely from cache, returning `None` (→ run the
+/// Python workers) if the catalog or any needed decompilation is missing.
+fn try_cached(
+    catalog_cache: &Path,
+    decomp_cache: &Path,
+    filters: &[String],
+    mode: Mode,
+) -> Result<Option<DecompileResult>> {
+    let Ok(bytes) = std::fs::read(catalog_cache) else {
+        return Ok(None);
+    };
+    let Ok(catalog) = serde_json::from_slice::<CatalogCache>(&bytes) else {
+        return Ok(None); // corrupt cache → just re-run
+    };
+
+    let mut selected: Vec<FunctionInfo> = catalog
+        .functions
+        .into_iter()
+        .filter(|f| matches_filters(f, filters))
+        .collect();
+    selected.sort_by_key(|f| f.addr);
+
+    let mut result = DecompileResult {
+        file_format: catalog.file_format,
+        ..Default::default()
+    };
+
+    if mode == Mode::List {
+        result.functions = selected;
+        return Ok(Some(result));
+    }
+
+    // Decompilation: every selected function must be in the cache, else bail.
+    let version_dir = decomp_cache.join(&catalog.angr_version);
+    for mut func in selected {
+        let path = version_dir.join(format!("0x{:x}.json", func.addr));
+        let cached = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<DecompCache>(&b).ok());
+        let Some(dc) = cached else {
+            return Ok(None);
+        };
+        func.text = Some(dc.text);
+        func.spans = dc.spans;
+        func.decompile_ms = dc.decompile_ms;
+        result.functions.push(func);
+    }
+    Ok(Some(result))
+}
+
+/// Whether `func` passes the `-f` name/address filters (empty = everything).
+fn matches_filters(func: &FunctionInfo, filters: &[String]) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    filters.iter().any(|raw| {
+        raw == &func.name || parse_int(raw).is_some_and(|addr| addr == func.addr)
+    })
+}
+
+/// Parse a `-f` address filter: `0x`-hex or decimal.
+fn parse_int(s: &str) -> Option<u64> {
+    let s = s.trim();
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => s.parse().ok(),
+    }
 }
 
 /// Per-binary cache directory: `<cache-root>/<sha256>`. Holds the CFG angrdb and

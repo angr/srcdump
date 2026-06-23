@@ -50,6 +50,7 @@ the binary's contents:
 
 ```
 ${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/db.adb              # CFG (angrdb)
+${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/catalog.json        # function catalog
 ${XDG_CACHE_HOME:-~/.cache}/srcdump/<sha256>/decomp/<angr-ver>/0x<addr>.json
 ```
 
@@ -59,6 +60,12 @@ entirely** and just reload from disk — the slow step only happens once. The
 decomp cache is namespaced by angr version, so a toolchain upgrade invalidates
 it automatically. `--load-libs` recovers a different CFG, cached separately
 (`db.load_libs.adb`, `decomp.load_libs/`).
+
+A whole-binary run also caches the **function catalog** (the full list plus file
+format). When the catalog and every requested function's decompilation are
+already cached, srcdump builds the result directly in Rust and **doesn't launch
+Python at all** — a warm run is near-instant instead of paying the per-worker
+angr import. Any cache miss transparently falls back to the worker pool.
 
 - `--redecompile` — re-decompile everything, ignoring/overwriting the cache
   (keeps the CFG).

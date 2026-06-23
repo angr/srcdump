@@ -78,6 +78,26 @@ pub struct FunctionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlSpan(pub usize, pub usize, pub String);
 
+/// The cached full function catalog, letting warm runs skip Python.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogCache {
+    #[serde(default)]
+    pub angr_version: String,
+    #[serde(default)]
+    pub file_format: Option<String>,
+    pub functions: Vec<FunctionInfo>,
+}
+
+/// One cached function decompilation (`decomp/<ver>/0x<addr>.json`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DecompCache {
+    pub text: String,
+    #[serde(default)]
+    pub spans: Vec<HlSpan>,
+    #[serde(default)]
+    pub decompile_ms: Option<f64>,
+}
+
 /// A function that could not be decompiled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionError {
