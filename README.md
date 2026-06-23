@@ -94,10 +94,12 @@ Options:
 
 ## Goals & Roadmap
 
-srcdump aims at quickly dumping the decompilation of a small-to-medium sized binary with some basic level of interaction (potentially friendlier to AI agents).
+srcdump aims at quickly dumping the decompilation (pseudocode) of a small-to-medium sized binary with some basic level of interaction (potentially friendlier to AI agents).
 We strongly recommend using angr, its CLI, its GUI, or any other binary analysis tools for advanced, complete, and long-running binary reverse engineering tasks.
 
 Immediate next steps:
 - Do not decompile long/large functions until users force the decompilation.
 - Improve angr so that decompilation of functions is faster.
+- Binary language detection.
+- Decompile to Rust pseudocode for Rust binaries.
 
