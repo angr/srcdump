@@ -13,6 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Inputs that steer environment resolution (mirrors the relevant CLI flags).
 pub struct EnvOptions {
@@ -157,6 +158,11 @@ fn ensure_managed(opts: &EnvOptions) -> Result<PathBuf> {
     // Fast path: already provisioned for this exact source.
     if !opts.refresh && python.is_file() && read_marker(&marker).as_deref() == Some(token.as_str())
     {
+        // For uv-managed envs, occasionally check PyPI for a newer angr and
+        // offer to upgrade. Best-effort; never fails the run.
+        if archive.is_none() {
+            let _ = maybe_offer_upgrade(&data_dir, &env_dir, &python);
+        }
         return Ok(python);
     }
 
@@ -244,6 +250,178 @@ fn provision_with_uv(opts: &EnvOptions, env_dir: &Path, data_dir: &Path) -> Resu
     cmd.arg("angr").arg("sqlalchemy");
     run(&mut cmd, "uv pip install angr")?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Periodic "newer angr available?" check (uv-managed env only)
+// ---------------------------------------------------------------------------
+
+/// How often to poll PyPI for a newer angr (seconds): once a week.
+const ANGR_CHECK_INTERVAL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Network timeout for the PyPI lookup. Kept tiny so a slow/offline network
+/// never noticeably delays startup.
+const ANGR_CHECK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// At most once per [`ANGR_CHECK_INTERVAL`], look up the latest angr on PyPI and,
+/// if it is newer than what's installed, offer (once per version) to upgrade.
+///
+/// Entirely best-effort: any misstep — no TTY, throttled, network/parse error —
+/// just returns quietly. Only an upgrade the user explicitly accepted that then
+/// fails surfaces a warning.
+fn maybe_offer_upgrade(data_dir: &Path, env_dir: &Path, python: &Path) -> Result<()> {
+    use std::io::IsTerminal;
+
+    // We can only prompt interactively; without a TTY there's nothing to do.
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+
+    let stamp = env_dir.join(".angr-check");
+    if !check_due(&stamp) {
+        return Ok(());
+    }
+
+    let installed = match installed_angr_version(python) {
+        Some(v) => v,
+        None => return Ok(()), // can't tell what's installed; skip silently
+    };
+
+    // Network step. On any failure, still touch the stamp so we don't retry for
+    // another interval, then bail out quietly.
+    let latest = match latest_angr_version() {
+        Some(v) => v,
+        None => {
+            let _ = touch_stamp(&stamp, &read_marker(&stamp).unwrap_or_default());
+            return Ok(());
+        }
+    };
+
+    let last_offered = read_marker(&stamp).unwrap_or_default();
+    // Record this check (mtime + the version we're about to consider) up front so
+    // we honor the interval and the "offer each version once" rule regardless of
+    // what the user answers.
+    let _ = touch_stamp(&stamp, &latest);
+
+    if !is_newer(&latest, &installed) || latest == last_offered {
+        return Ok(());
+    }
+
+    let prompt = format!(
+        "A newer angr is available on PyPI: {latest} (you have {installed}). \
+         Download and use it?"
+    );
+    if !confirm(&prompt, false)? {
+        return Ok(());
+    }
+
+    status(&format!("upgrading angr to {latest} with uv…"));
+    if let Err(e) = upgrade_angr(data_dir, env_dir) {
+        status(&format!(
+            "angr upgrade failed: {e:#}; keeping the current version"
+        ));
+        return Ok(());
+    }
+    status(&format!("angr upgraded to {latest}"));
+    Ok(())
+}
+
+/// True when no stamp exists yet, or the last check is older than the interval.
+fn check_due(stamp: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(stamp) else {
+        return true;
+    };
+    let Ok(modified) = meta.modified() else {
+        return true;
+    };
+    match modified.elapsed() {
+        Ok(elapsed) => elapsed >= ANGR_CHECK_INTERVAL,
+        Err(_) => false, // mtime in the future (clock skew): treat as recent
+    }
+}
+
+/// Write `version` into the stamp file, which also refreshes its mtime.
+fn touch_stamp(stamp: &Path, version: &str) -> Result<()> {
+    std::fs::write(stamp, version).with_context(|| format!("writing {}", stamp.display()))
+}
+
+/// The angr version installed in the managed env, via `importlib.metadata`.
+fn installed_angr_version(python: &Path) -> Option<String> {
+    let out = Command::new(python)
+        .arg("-c")
+        .arg("import importlib.metadata as m; print(m.version('angr'))")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// The latest angr version from PyPI's JSON API, with a short timeout. Returns
+/// `None` on any network/parse error.
+fn latest_angr_version() -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct PyPi {
+        info: Info,
+    }
+    #[derive(serde::Deserialize)]
+    struct Info {
+        version: String,
+    }
+
+    let mut resp = ureq::get("https://pypi.org/pypi/angr/json")
+        .config()
+        .timeout_global(Some(ANGR_CHECK_TIMEOUT))
+        .build()
+        .call()
+        .ok()?;
+    // angr's PyPI metadata is well over the default 10 MB body limit.
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024 * 1024)
+        .read_to_string()
+        .ok()?;
+    let pypi: PyPi = serde_json::from_str(&text).ok()?;
+    let v = pypi.info.version.trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Compare dotted version strings (e.g. `9.2.182`) numerically, segment by
+/// segment, ignoring any non-numeric suffix on a segment.
+fn is_newer(latest: &str, installed: &str) -> bool {
+    version_key(latest) > version_key(installed)
+}
+
+fn version_key(v: &str) -> Vec<u64> {
+    v.split('.')
+        .map(|seg| {
+            let digits: String = seg.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().unwrap_or(0)
+        })
+        .collect()
+}
+
+/// Run `uv pip install --upgrade angr sqlalchemy` against the managed env,
+/// serialized against other srcdump processes via the setup lock.
+fn upgrade_angr(data_dir: &Path, env_dir: &Path) -> Result<()> {
+    let _lock = Flock::acquire(&data_dir.join("setup.lock"))?;
+    let uv = ensure_uv(data_dir)?;
+    let python = venv_python(env_dir);
+    run(
+        Command::new(&uv)
+            .arg("pip")
+            .arg("install")
+            .arg("--upgrade")
+            .arg("--python")
+            .arg(&python)
+            .arg("angr")
+            .arg("sqlalchemy"),
+        "uv pip install --upgrade angr",
+    )
 }
 
 /// Find a usable `uv`: on PATH, else previously downloaded, else download it.
@@ -591,5 +769,33 @@ impl Flock {
             .open(path)
             .with_context(|| format!("opening lock {}", path.display()))?;
         Ok(Self { _file: file })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_newer, version_key};
+
+    #[test]
+    fn version_key_parses_segments() {
+        assert_eq!(version_key("9.2.182"), vec![9, 2, 182]);
+        assert_eq!(version_key("9.2"), vec![9, 2]);
+        // Non-numeric suffixes (rc/post/dev tags) reduce to the leading digits.
+        assert_eq!(version_key("9.2.0rc1"), vec![9, 2, 0]);
+        assert_eq!(version_key(""), vec![0]);
+    }
+
+    #[test]
+    fn is_newer_compares_numerically() {
+        assert!(is_newer("9.2.183", "9.2.182"));
+        assert!(is_newer("9.3.0", "9.2.999"));
+        // Trailing extra segment counts as newer (9.2.1 > 9.2).
+        assert!(is_newer("9.2.1", "9.2"));
+        // Lexicographic-but-numeric: 10 > 9, not "1" < "9".
+        assert!(is_newer("9.2.10", "9.2.9"));
+
+        assert!(!is_newer("9.2.182", "9.2.182"));
+        assert!(!is_newer("9.2.182", "9.2.183"));
+        assert!(!is_newer("9.2", "9.2.1"));
     }
 }
