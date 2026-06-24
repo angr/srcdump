@@ -184,17 +184,28 @@ def build_uv_angr(uv: Path, workdir: Path, py_version: str, angr_spec: str) -> P
     run([uv, "python", "install", "--install-dir", py_store, py_version])
     cpython_dir, interpreter = _find_standalone(py_store, py_version)
 
-    # 2. A relocatable venv at the archive root, from that interpreter.
+    # 2. A relocatable venv at the archive root, from that interpreter. Its
+    #    pyvenv.cfg still references the live interpreter by absolute path.
     log("creating relocatable venv")
     run([uv, "venv", "--relocatable", "--python", interpreter, stage])
 
-    # 3. Bundle a copy of the interpreter *inside* the venv root.
+    # 3. Install angr (+ sqlalchemy, which srcdump's AngrDB cache needs) *before*
+    #    relocating anything. uv validates the venv via pyvenv.cfg, so the install
+    #    has to happen while `home` still points at a real interpreter (notably on
+    #    Windows, where Scripts/python.exe is a trampoline with no symlink to fall
+    #    back on).
+    venv_python = stage / ("Scripts" if IS_WINDOWS else "bin") / f"python{EXE}"
+    log(f"installing angr{angr_spec or ' (latest)'} into the bundled env")
+    run([uv, "pip", "install", "--python", venv_python, f"angr{angr_spec}", "sqlalchemy"])
+
+    # 4. Bundle a copy of the interpreter *inside* the venv root.
     log("bundling the interpreter into the venv")
     bundled_root = stage / ".python" / cpython_dir.name
     bundled_root.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(cpython_dir, bundled_root, symlinks=True)
 
-    # 4. Repoint the venv at the bundled interpreter with relative paths.
+    # 5. Repoint the venv at the bundled interpreter with relative paths, so the
+    #    whole tree is self-contained once unzipped on another machine.
     if IS_WINDOWS:
         bundled_bin = bundled_root  # python.exe lives at the cpython root
     else:
@@ -204,11 +215,6 @@ def build_uv_angr(uv: Path, workdir: Path, py_version: str, angr_spec: str) -> P
         venv_py.unlink()
         venv_py.symlink_to(os.path.relpath(bundled_exe, venv_py.parent))
     _rewrite_home(stage / "pyvenv.cfg", os.path.relpath(bundled_bin, stage))
-
-    # 5. Install angr (+ sqlalchemy, which srcdump's AngrDB cache needs) into it.
-    venv_python = stage / ("Scripts" if IS_WINDOWS else "bin") / f"python{EXE}"
-    log(f"installing angr{angr_spec or ' (latest)'} into the bundled env")
-    run([uv, "pip", "install", "--python", venv_python, f"angr{angr_spec}", "sqlalchemy"])
 
     # 6. Zip it up, preserving symlinks and executable bits.
     out_zip = workdir / "uv_angr.zip"
