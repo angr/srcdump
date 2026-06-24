@@ -112,4 +112,5 @@ Immediate next steps:
 - Binary language detection.
 - Decompile to Rust pseudocode for Rust binaries.
 - Line wrapping in angr decompiler.
+- When loading MachO fat binaries, default to the first one, and allow users to pick which one to load.
 
