@@ -9,6 +9,15 @@ See [Interactive TUI](#interactive-tui).
 ```
 $ srcdump ./program             # interactive TUI (when run in a terminal)
 $ srcdump ./program | less      # plain dump (when piped/redirected)
+```
+
+A recording of srcdump in action:
+
+![Demo](./asserts/srcdump.gif)
+
+Alternatively, you can decompile one or more functions, or list all functions in the binary without decompiling anything.
+
+```
 $ srcdump -f main ./program     # just one function (by name or 0xADDR)
 $ srcdump -l ./program          # list functions, don't decompile
 ```
