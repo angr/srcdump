@@ -3,6 +3,19 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+  # Manual trigger: pick a version and (by default) do a dry run that builds
+  # every artifact without publishing a GitHub Release. Uncheck "dry run" to cut
+  # a real release (which also creates the tag).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. v1.2.3 (must match Cargo.toml)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: build artifacts but do not publish a release or tag"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -11,23 +24,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Refuse to release if the tag doesn't match the crate version.
-  verify-version:
+  # Resolve the version + dry-run flag from whichever trigger fired, and refuse
+  # to proceed unless the version matches the crate version in Cargo.toml (the
+  # binary stamps its own version from Cargo.toml, so a mismatch ships a lie).
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check tag matches Cargo.toml
+      - id: resolve
+        shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            raw='${{ inputs.version }}'
+            dry='${{ inputs.dry_run }}'
+          else
+            raw="$GITHUB_REF_NAME"
+            dry="false"
+          fi
+          version="v${raw#v}"   # normalize to a single leading 'v'
           crate="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
-          echo "tag=$tag crate=$crate"
-          test "$tag" = "$crate"
+          echo "version=$version  crate=$crate  dry_run=$dry"
+          if ! echo "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$version' must look like vX.Y.Z"; exit 1
+          fi
+          if [ "${version#v}" != "$crate" ]; then
+            echo "::error::version $version does not match Cargo.toml version $crate"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
 
-  # Slim release: just the static `srcdump` binary, one per target.
-  upload:
+  # Slim release: the static `srcdump` binary, one per target. taiki-e runs in
+  # dry-run mode purely as a cross-compiling builder; the actual release upload
+  # happens later in `publish`. The built archive is passed to downstream jobs
+  # as a workflow artifact.
+  slim:
     name: slim ${{ matrix.target }}
-    needs: verify-version
+    needs: setup
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -43,23 +79,40 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Upload ${{ matrix.target }} binary
-        uses: taiki-e/upload-rust-binary-action@v1
+      - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: srcdump
           target: ${{ matrix.target }}
           archive: srcdump-$tag-$target
+          ref: refs/tags/${{ needs.setup.outputs.version }}
+          dry-run: true # always build-only here; `publish` does the upload
           checksum: sha256
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Collect the slim archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          # taiki-e builds `srcdump-<version>-<target>.{tar.gz,zip}` (+ .sha256);
+          # find it wherever it landed and stage it for upload.
+          mkdir -p out
+          find . -type f -name "srcdump-${{ needs.setup.outputs.version }}-${{ matrix.target }}.*" \
+            -exec cp {} out/ \;
+          ls -la out
+          [ -n "$(ls -A out)" ] || { echo "::error::no slim archive was produced"; exit 1; }
+      - name: Stash slim archive as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slim-${{ matrix.target }}
+          if-no-files-found: error
+          path: out/*
 
   # Full release: srcdump + uv + a self-contained, offline-installable
   # uv_angr.zip, built natively per-OS by scripts/build_release.py. The bundled
-  # srcdump is the static (musl, where applicable) slim binary from the `upload`
-  # job above — reused as-is for maximum compatibility, so this job needs no
-  # Rust toolchain.
+  # srcdump is the exact static (musl, where applicable) slim binary built
+  # above, reused as-is for maximum compatibility — so this job needs no Rust
+  # toolchain.
   full:
     name: full ${{ matrix.target }}
-    needs: upload
+    needs: [setup, slim]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -82,8 +135,6 @@ jobs:
             os: windows-latest
             slim: x86_64-pc-windows-msvc
             ext: zip
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -94,11 +145,14 @@ jobs:
         with:
           enable-cache: true
       - name: Fetch the slim srcdump for this platform
+        uses: actions/download-artifact@v4
+        with:
+          name: slim-${{ matrix.slim }}
+          path: slim
+      - name: Unpack the slim binary
         shell: bash
         run: |
           set -euo pipefail
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern "srcdump-*-${{ matrix.slim }}.${{ matrix.ext }}" --dir slim
           cd slim
           if [ "${{ matrix.ext }}" = "zip" ]; then
             unzip -o srcdump-*.zip
@@ -110,12 +164,39 @@ jobs:
         run: |
           set -euo pipefail
           bin=$(find slim -type f \( -name srcdump -o -name srcdump.exe \) | head -1)
-          [ -n "$bin" ] || { echo "slim srcdump not found in archive"; exit 1; }
+          [ -n "$bin" ] || { echo "slim srcdump not found in artifact"; exit 1; }
           [ "${{ runner.os }}" = "Windows" ] || chmod +x "$bin"
           python scripts/build_release.py \
-            --full-only --srcdump "$bin" --archive-version "$GITHUB_REF_NAME"
-      - name: Upload full archive to the release
+            --full-only --srcdump "$bin" --archive-version "${{ needs.setup.outputs.version }}"
+      - name: Checksum the full archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/sha256sum.py dist/*-full.*
+      - name: Stash full archive as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-${{ matrix.target }}
+          if-no-files-found: error
+          path: dist/*-full.*
+
+  # Publish: only for real (non-dry) runs. Gather every slim + full artifact and
+  # create the GitHub Release (and its tag, for manual runs) with all of them.
+  publish:
+    needs: [setup, slim, full]
+    if: needs.setup.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: List artifacts
+        run: ls -la release
+      - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*-full.*
+          tag_name: ${{ needs.setup.outputs.version }}
+          files: release/*
+          fail_on_unmatched_files: true
           token: ${{ secrets.GITHUB_TOKEN }}
