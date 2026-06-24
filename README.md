@@ -22,6 +22,13 @@ $ srcdump -f main ./program     # just one function (by name or 0xADDR)
 $ srcdump -l ./program          # list functions, don't decompile
 ```
 
+## Releases
+
+You can download the latest release at [the Releases section](https://github.com/angr/srcdump/releases).
+We provide two types of releases for Windows (x64), Linux (x86-64 and arm64), and MacOS (aarch64):
+"slim", which only contains the `srcdump` main executable. It will download uv and angr (as well as its dependencies) during runtime (requires Internet connection).
+"full", which contains srcdump, uv, and a bundled virtual environment of angr (does not require Internet connection during runtime).
+
 ## How it works
 
 srcdump is a thin orchestrator written in Rust.
