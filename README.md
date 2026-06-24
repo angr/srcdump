@@ -13,7 +13,7 @@ $ srcdump ./program | less      # plain dump (when piped/redirected)
 
 A recording of srcdump in action:
 
-![Demo](./asserts/srcdump.gif)
+![Demo](./assets/srcdump.gif)
 
 Alternatively, you can decompile one or more functions, or list all functions in the binary without decompiling anything.
 
