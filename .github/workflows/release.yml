@@ -24,8 +24,9 @@ jobs:
           echo "tag=$tag crate=$crate"
           test "$tag" = "$crate"
 
+  # Slim release: just the static `srcdump` binary, one per target.
   upload:
-    name: ${{ matrix.target }}
+    name: slim ${{ matrix.target }}
     needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
@@ -49,4 +50,72 @@ jobs:
           target: ${{ matrix.target }}
           archive: srcdump-$tag-$target
           checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Full release: srcdump + uv + a self-contained, offline-installable
+  # uv_angr.zip, built natively per-OS by scripts/build_release.py. The bundled
+  # srcdump is the static (musl, where applicable) slim binary from the `upload`
+  # job above — reused as-is for maximum compatibility, so this job needs no
+  # Rust toolchain.
+  full:
+    name: full ${{ matrix.target }}
+    needs: upload
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            slim: x86_64-unknown-linux-musl
+            ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            slim: aarch64-unknown-linux-musl
+            ext: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            slim: aarch64-apple-darwin
+            ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            slim: x86_64-pc-windows-msvc
+            ext: zip
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Fetch the slim srcdump for this platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "srcdump-*-${{ matrix.slim }}.${{ matrix.ext }}" --dir slim
+          cd slim
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            unzip -o srcdump-*.zip
+          else
+            tar xzf srcdump-*.tar.gz
+          fi
+      - name: Build full release
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(find slim -type f \( -name srcdump -o -name srcdump.exe \) | head -1)
+          [ -n "$bin" ] || { echo "slim srcdump not found in archive"; exit 1; }
+          [ "${{ runner.os }}" = "Windows" ] || chmod +x "$bin"
+          python scripts/build_release.py \
+            --full-only --srcdump "$bin" --archive-version "$GITHUB_REF_NAME"
+      - name: Upload full archive to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*-full.*
           token: ${{ secrets.GITHUB_TOKEN }}
