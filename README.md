@@ -32,7 +32,7 @@ srcdump heavily relies on [uv](https://github.com/astral-sh/uv/), parallelism, a
 
 When running for the first time, srcdump creates a virtual environment with angr downloaded and installed.
 For distribution without network access, srcdump unpacks the angr environment from  `uv_angr.zip`.
-You can remove the virtual environment by running `srcdump --remove-venv`.
+You can remove the virtual environment by running `srcdump --remove-env`.
 
 ### Caching
 

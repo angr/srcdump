@@ -86,13 +86,12 @@ jobs:
           archive: srcdump-$tag-$target
           ref: refs/tags/${{ needs.setup.outputs.version }}
           dry-run: true # always build-only here; `publish` does the upload
-          checksum: sha256
       - name: Collect the slim archive
         shell: bash
         run: |
           set -euo pipefail
-          # taiki-e builds `srcdump-<version>-<target>.{tar.gz,zip}` (+ .sha256);
-          # find it wherever it landed and stage it for upload.
+          # taiki-e builds `srcdump-<version>-<target>.{tar.gz,zip}`; find it
+          # wherever it landed and stage it for upload.
           mkdir -p out
           find . -type f -name "srcdump-${{ needs.setup.outputs.version }}-${{ matrix.target }}.*" \
             -exec cp {} out/ \;
@@ -168,11 +167,6 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] || chmod +x "$bin"
           python scripts/build_release.py \
             --full-only --srcdump "$bin" --archive-version "${{ needs.setup.outputs.version }}"
-      - name: Checksum the full archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/sha256sum.py dist/*-full.*
       - name: Stash full archive as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -193,10 +187,23 @@ jobs:
           merge-multiple: true
       - name: List artifacts
         run: ls -la release
+      - name: Build release notes with checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### SHA-256 checksums"
+            echo
+            echo '```'
+            ( cd release && sha256sum * )
+            echo '```'
+          } > notes.md
+          cat notes.md
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.setup.outputs.version }}
+          body_path: notes.md
           files: release/*
           fail_on_unmatched_files: true
           token: ${{ secrets.GITHUB_TOKEN }}
