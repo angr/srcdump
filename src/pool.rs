@@ -13,7 +13,10 @@ use crate::backend::{DecompileBackend, DecompileRequest, DecompileResult, Mode};
 use crate::model::WorkerMessage;
 use crate::progress::Progress;
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::{BufRead, BufReader, Read};
+use std::collections::hash_map::RandomState;
+use std::fs::{DirBuilder, OpenOptions};
+use std::hash::{BuildHasher, Hasher};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,18 +80,75 @@ fn kill(pid: u32) {
         .status();
 }
 
+/// Random hex token drawn from `RandomState`, whose SipHash keys are seeded
+/// from OS entropy — unpredictable temp names without a rand dependency.
+fn random_token() -> String {
+    fn draw() -> u64 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(0);
+        hasher.finish()
+    }
+    format!("{:016x}{:016x}", draw(), draw())
+}
+
+/// Create a fresh private subdirectory under the system temp dir.
+///
+/// The name is random and `create_dir` refuses to reuse an existing path, so
+/// we never adopt a directory another user prepared. On Unix it is created
+/// mode 0o700 so no other user can write into or traverse it.
+fn create_private_dir() -> Result<PathBuf> {
+    let mut builder = DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    for _ in 0..16 {
+        let dir = std::env::temp_dir().join(format!("srcdump-{}", random_token()));
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("creating worker dir {}", dir.display()))
+            }
+        }
+    }
+    bail!(
+        "could not create a private worker dir under {}",
+        std::env::temp_dir().display()
+    );
+}
+
 pub struct ProcessPoolBackend {
+    worker_dir: PathBuf,
     worker_script: PathBuf,
 }
 
 impl ProcessPoolBackend {
-    /// Materialize the embedded worker script to a temp file for this process.
+    /// Materialize the embedded worker script to a randomly-named file inside
+    /// a private (user-only) temp subdirectory for this process.
     pub fn new() -> Result<Self> {
-        let mut path = std::env::temp_dir();
-        path.push(format!("srcdump_worker_{}.py", std::process::id()));
-        std::fs::write(&path, WORKER_SOURCE)
+        let dir = create_private_dir()?;
+        let path = dir.join(format!("worker-{}.py", random_token()));
+        // Unlink anything already occupying the name, then create exclusively
+        // (`create_new` never follows or truncates an existing file), so a
+        // pre-planted file or symlink can neither survive nor be written
+        // through.
+        let _ = std::fs::remove_file(&path);
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts
+            .open(&path)
+            .with_context(|| format!("creating worker script {}", path.display()))?;
+        file.write_all(WORKER_SOURCE.as_bytes())
             .with_context(|| format!("writing worker script to {}", path.display()))?;
         Ok(Self {
+            worker_dir: dir,
             worker_script: path,
         })
     }
@@ -97,6 +157,7 @@ impl ProcessPoolBackend {
 impl Drop for ProcessPoolBackend {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.worker_script);
+        let _ = std::fs::remove_dir(&self.worker_dir);
     }
 }
 
@@ -360,4 +421,49 @@ fn tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_script_lives_in_private_random_dir() {
+        let backend = ProcessPoolBackend::new().unwrap();
+
+        assert!(backend.worker_script.is_file());
+        assert_eq!(backend.worker_script.parent(), Some(&*backend.worker_dir));
+        assert_eq!(backend.worker_dir.parent(), Some(&*std::env::temp_dir()));
+        assert_eq!(
+            std::fs::read_to_string(&backend.worker_script).unwrap(),
+            WORKER_SOURCE
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::metadata(&backend.worker_dir)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(dir_mode & 0o777, 0o700, "worker dir must be user-only");
+            let file_mode = std::fs::metadata(&backend.worker_script)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(file_mode & 0o777, 0o600, "worker script must be user-only");
+        }
+
+        // Two backends must never collide on paths.
+        let other = ProcessPoolBackend::new().unwrap();
+        assert_ne!(backend.worker_dir, other.worker_dir);
+        assert_ne!(backend.worker_script, other.worker_script);
+
+        // Drop removes both the script and its private directory.
+        let (dir, script) = (backend.worker_dir.clone(), backend.worker_script.clone());
+        drop(backend);
+        assert!(!script.exists());
+        assert!(!dir.exists());
+        drop(other);
+    }
 }
