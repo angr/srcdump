@@ -29,6 +29,15 @@ We provide two types of releases for Windows (x64), Linux (x86-64 and arm64), an
 "slim", which only contains the `srcdump` main executable. It will download uv and angr (as well as its dependencies) during runtime (requires Internet connection).
 "full", which contains srcdump, uv, and a bundled virtual environment of angr (does not require Internet connection during runtime).
 
+### Nix
+
+srcdump can be built or run with Nix flakes. The package puts nixpkgs' uv on `PATH`, and srcdump provisions angr with it on first run.
+
+```
+$ nix run github:angr/srcdump -- ./program
+$ nix develop    # shell with the Rust toolchain and uv
+```
+
 ## How it works
 
 srcdump is a thin orchestrator written in Rust.
